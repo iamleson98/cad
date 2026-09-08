@@ -5,6 +5,12 @@ use forge_geometry::TriMesh;
 use forge_sketch::Sketch;
 use serde::{Deserialize, Serialize};
 
+/// Serde default for [`Feature::TransformBody::pivot`] (backward
+/// compatibility with pre-W-01 files that lack the field).
+fn pivot_default() -> Point3 {
+    Point3::origin()
+}
+
 /// How an extrusion interacts with existing bodies (boss vs cut).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExtrudeOp {
@@ -321,7 +327,8 @@ pub enum Feature {
     Primitive(PrimitiveParams),
     /// Boolean combination of bodies.
     Boolean(BooleanFeature),
-    /// Transform a body (rigid move).
+    /// Transform a body (rigid move). The source body is consumed: the
+    /// transform *replaces* it in the scene (move semantics, W-01).
     TransformBody {
         /// Source body feature.
         source: FeatureId,
@@ -329,6 +336,13 @@ pub enum Feature {
         translation: Vector3,
         /// Euler angles (XYZ, radians).
         rotation: Vector3,
+        /// Rotation pivot (world point). Rotation and the pivot-dependent
+        /// part of the composed transform are evaluated as
+        /// `pivot + R·(p − pivot) + translation`, so translating is
+        /// independent of the pivot and rotating spins the body about it
+        /// (W-01 gizmo). Defaults to the origin (old files).
+        #[serde(default = "pivot_default")]
+        pivot: Point3,
     },
     /// Replicate a body along a direction (F-02).
     LinearPattern(LinearPatternParams),

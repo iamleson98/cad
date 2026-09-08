@@ -157,6 +157,32 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
         {
             PaletteAction::ToggleMeasure.run(app);
         }
+
+        ui.separator();
+
+        // Gizmo mode (W-01): translate / rotate manipulator.
+        if ui
+            .add(
+                egui::Button::new("⇔ Move")
+                    .small()
+                    .selected(app.gizmo_mode == crate::gizmo::GizmoMode::Translate),
+            )
+            .on_hover_text("Gizmo translate mode (T) — select a body and drag an axis")
+            .clicked()
+        {
+            PaletteAction::GizmoTranslate.run(app);
+        }
+        if ui
+            .add(
+                egui::Button::new("⟳ Rotate")
+                    .small()
+                    .selected(app.gizmo_mode == crate::gizmo::GizmoMode::Rotate),
+            )
+            .on_hover_text("Gizmo rotate mode (R) — select a body and drag a ring")
+            .clicked()
+        {
+            PaletteAction::GizmoRotate.run(app);
+        }
         if let Some(section) = &mut app.render_options.section {
             let mut axis = if section.normal[0] != 0.0 {
                 0
@@ -553,11 +579,21 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
             source,
             translation,
             rotation,
+            pivot,
         } => {
             let mut t = *translation;
             ui.add(egui::Slider::new(&mut t.x, -200.0..=200.0).text("translate X"));
             ui.add(egui::Slider::new(&mut t.y, -200.0..=200.0).text("translate Y"));
             ui.add(egui::Slider::new(&mut t.z, -200.0..=200.0).text("translate Z"));
+            ui.weak(format!(
+                "Rotation: {:.1}\u{00b0} / {:.1}\u{00b0} / {:.1}\u{00b0} about ({:.1}, {:.1}, {:.1}) \u{2014} drag the viewport gizmo",
+                rotation.x.to_degrees(),
+                rotation.y.to_degrees(),
+                rotation.z.to_degrees(),
+                pivot.x,
+                pivot.y,
+                pivot.z
+            ));
             if (t.x - translation.x).abs() > 1e-9
                 || (t.y - translation.y).abs() > 1e-9
                 || (t.z - translation.z).abs() > 1e-9
@@ -568,6 +604,7 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
                         source: *source,
                         translation: t,
                         rotation: *rotation,
+                        pivot: *pivot,
                     },
                 );
             }

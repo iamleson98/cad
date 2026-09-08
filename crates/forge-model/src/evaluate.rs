@@ -448,13 +448,21 @@ impl Evaluator {
                 source,
                 translation,
                 rotation,
+                pivot,
             } => {
                 let mesh = self.cached_body(*source).cloned().ok_or_else(|| {
                     crate::ModelError::MissingEntity(format!("source {} has no body", source))
                 })?;
+                // p' = pivot + R·(p − pivot) + translation: rotation spins
+                // about the pivot, translation is a pure world offset.
+                let rot =
+                    nalgebra::UnitQuaternion::from_euler_angles(rotation.x, rotation.y, rotation.z);
                 let iso = forge_core::Transform::from_parts(
-                    nalgebra::Translation3::new(translation.x, translation.y, translation.z),
-                    nalgebra::UnitQuaternion::from_euler_angles(rotation.x, rotation.y, rotation.z),
+                    nalgebra::Translation3::from(pivot.coords + translation),
+                    rot,
+                ) * forge_core::Transform::from_parts(
+                    nalgebra::Translation3::from(-pivot.coords),
+                    nalgebra::UnitQuaternion::identity(),
                 );
                 let mut m = mesh.transformed(&iso);
                 m.compute_vertex_normals();
@@ -604,6 +612,9 @@ fn consumed_targets(feature: &Feature) -> Vec<FeatureId> {
             .then_some(p.target)
             .into_iter()
             .collect(),
+        // W-01: a transform *moves* its source (the source body is
+        // replaced by the transformed one).
+        Feature::TransformBody { source, .. } => vec![*source],
         _ => Vec::new(),
     }
 }
@@ -1390,6 +1401,111 @@ mod tests {
             "bbox {:?}",
             bb
         );
+    }
+
+    // ---- Transform body (W-01: move semantics + pivot) ------------------
+
+    #[test]
+    fn transform_body_consumes_source_and_moves() {
+        let mut doc = Document::new("transform");
+        let source = add_box(
+            &mut doc,
+            "box",
+            Point3::new(5.0, 0.0, 0.0),
+            Vector3::new(2.0, 4.0, 6.0),
+        );
+        doc.add_feature(Feature::TransformBody {
+            source,
+            translation: Vector3::new(10.0, -3.0, 1.0),
+            rotation: Vector3::new(0.0, 0.0, 0.0),
+            pivot: Point3::origin(),
+        })
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // Move semantics: the source is consumed, exactly one body remains.
+        assert_eq!(result.bodies.len(), 1, "source must be consumed");
+        let body = &result.bodies[0];
+        assert_eq!(body.id, BodyId::new(2));
+        assert!((body.mesh.volume_signed() - 48.0).abs() < 1e-9);
+        // The bbox center moved by the translation.
+        let bb = body.mesh.bbox();
+        let center = bb.center();
+        assert!(
+            (center - Point3::new(15.0, -3.0, 1.0)).norm() < 1e-9,
+            "center {center:?}"
+        );
+    }
+
+    #[test]
+    fn transform_body_rotates_about_pivot() {
+        let mut doc = Document::new("transform-pivot");
+        let source = add_box(
+            &mut doc,
+            "box",
+            Point3::new(10.0, 0.0, 0.0),
+            Vector3::new(2.0, 2.0, 2.0),
+        );
+        // 90° about Z, pivot = the box center: the box spins in place.
+        doc.add_feature(Feature::TransformBody {
+            source,
+            translation: Vector3::zeros(),
+            rotation: Vector3::new(0.0, 0.0, std::f64::consts::FRAC_PI_2),
+            pivot: Point3::new(10.0, 0.0, 0.0),
+        })
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let body = &result.bodies[0];
+        let bb = body.mesh.bbox();
+        assert!(
+            (bb.center() - Point3::new(10.0, 0.0, 0.0)).norm() < 1e-9,
+            "spins about its own center, {:?}",
+            bb.center()
+        );
+        assert!((body.mesh.volume_signed() - 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn transform_body_pivot_default_is_origin() {
+        // Old files serialize without `pivot`; it must default to the
+        // origin (backward compatibility with pre-W-01 documents).
+        let with_pivot = Feature::TransformBody {
+            source: FeatureId::new(7),
+            translation: Vector3::new(1.0, 2.0, 3.0),
+            rotation: Vector3::new(0.1, 0.2, 0.3),
+            pivot: Point3::new(4.0, 5.0, 6.0),
+        };
+        let s = ron::to_string(&with_pivot).expect("serialize");
+        // Strip the trailing `pivot: <value>` — `pivot` is the last field,
+        // so everything between it and the final `)` is the value.
+        let i = s.find("pivot").expect("pivot present");
+        let close = s[i..].rfind(')').expect("variant close");
+        let old_text = format!("{}{}", &s[..i], &s[i + close..]);
+        assert!(!old_text.contains("pivot"), "stripped text: {old_text}");
+
+        let old: Feature = ron::from_str(&old_text).expect("parse old format");
+        match old {
+            Feature::TransformBody {
+                source,
+                translation,
+                rotation,
+                pivot,
+            } => {
+                assert_eq!(source, FeatureId::new(7));
+                assert!((translation - Vector3::new(1.0, 2.0, 3.0)).norm() < 1e-12);
+                assert!((rotation - Vector3::new(0.1, 0.2, 0.3)).norm() < 1e-12);
+                assert!(
+                    (pivot - Point3::origin()).norm() < 1e-12,
+                    "missing pivot must default to the origin"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

@@ -108,9 +108,16 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
         }
     }
 
+    // ---- Gizmo interaction (W-01): before the pick block so a handle
+    // press can own the click; drawing happens after the 3D callback. ----
+    let _gizmo_dragging = crate::gizmo::gizmo_interaction(ui, app, rect, &response);
+
     // ---- Picking (FR-RD-02): click to select ----
     if let Some(click_pos) = response.interact_pointer_pos() {
-        if response.clicked_by(egui::PointerButton::Primary) {
+        if response.clicked_by(egui::PointerButton::Primary)
+            && !app.gizmo_press_on_handle
+            && app.gizmo_drag.is_none()
+        {
             let local = click_pos - rect.min;
             if app.measure_mode {
                 // W-08: measurement picks use CPU raycasts (exact hit
@@ -151,6 +158,10 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
     if app.measure_mode && !app.measure_picks.is_empty() {
         draw_measurement(ui, app, rect);
     }
+
+    // ---- Gizmo overlay (W-01): after the 3D paint callback (painter
+    // shapes render in submission order) and above the grid. ----
+    crate::gizmo::gizmo_draw(ui, app, rect);
 
     // ---- Navigation cube (FR-RD-04) ----
     navigation_cube(ui, &mut app.camera, rect);

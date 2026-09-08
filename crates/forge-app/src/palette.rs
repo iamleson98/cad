@@ -249,6 +249,16 @@ pub fn entries() -> Vec<PaletteEntry> {
             keywords: "measure distance angle inspect dimension",
             action: ToggleMeasure,
         },
+        PaletteEntry {
+            label: "Gizmo: move (translate) mode",
+            keywords: "gizmo manipulator move translate drag handle",
+            action: GizmoTranslate,
+        },
+        PaletteEntry {
+            label: "Gizmo: rotate mode",
+            keywords: "gizmo manipulator rotate spin ring handle",
+            action: GizmoRotate,
+        },
     ]
 }
 
@@ -302,6 +312,10 @@ pub enum PaletteAction {
     DisplayXRay,
     ToggleSection,
     ToggleMeasure,
+    /// W-01: gizmo translate mode.
+    GizmoTranslate,
+    /// W-01: gizmo rotate mode.
+    GizmoRotate,
 }
 
 /// Simple subsequence fuzzy match score; `usize::MAX` means no match.
@@ -426,6 +440,19 @@ impl PaletteAction {
             DisplayShaded => app.set_display_mode(forge_render::DisplayMode::Shaded),
             DisplayWireframe => app.set_display_mode(forge_render::DisplayMode::Wireframe),
             DisplayXRay => app.set_display_mode(forge_render::DisplayMode::XRay),
+
+            GizmoTranslate => {
+                app.gizmo_mode = crate::gizmo::GizmoMode::Translate;
+                app.set_status(
+                    "Gizmo: translate (T) — select a body, drag an axis arrow or a plane",
+                );
+            }
+            GizmoRotate => {
+                app.gizmo_mode = crate::gizmo::GizmoMode::Rotate;
+                app.set_status(
+                    "Gizmo: rotate (R) — select a body, drag a ring (5\u{00b0} snap, Shift = off)",
+                );
+            }
 
             ToggleSection => {
                 let enabled = app.render_options.section.is_some();

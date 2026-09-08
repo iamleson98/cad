@@ -126,10 +126,23 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 
 ## Wave 3 — Viewport interaction & rendering parity
 
-- [ ] **W-01 3D drag manipulator (gizmo)** `(M)` `P0`
+- [x] **W-01 3D drag manipulator (gizmo)** `(M)` `P0`
       Translate/rotate screen-space handles with axis picking, drag plane
       raycast, snapping (1 mm / 5°), replacing inspector sliders for
       transforms. Selected-body + feature-instance drag.
+      *Done: `gizmo.rs` — translate arrows + plane handles (ray-line
+      closest-point / ray-plane intersection, 1 mm snap, Shift = off) and
+      rotation rings (signed in-plane angle about world axes, 5° snap).
+      Drives `Feature::TransformBody`, which now *consumes* its source
+      (move semantics) and gained a `pivot` (serde-default origin, old
+      files load unchanged): rotation = `pivot + R·(p−pivot) + t`, so
+      rings spin the body about the gizmo anchor (pivot rebased at grab,
+      world-preserving via `T + (I−R)(p−p')`). Bodies without a transform
+      get a wrapper feature; exactly ONE undo command per drag (Add or
+      Edit, zero-delta drags discarded). Keyboard T/R, toolbar Move/
+      Rotate toggles, palette commands, constant screen size, hover
+      highlight, away-axis dimming, pick-click suppression while a
+      handle owns the press. Multi-body drag lands with A-01.*
 - [x] **W-02 Section view (clipping)** `(S)` `P1`
       Arbitrary clipping plane per viewport: GPU-side clip distance in WGSL
       + cap-plane rendering (stencil technique) or exposed cutaway

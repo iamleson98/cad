@@ -1,6 +1,7 @@
 //! The ForgeApp: main application state and update loop.
 
 use crate::background::{EvalRequest, EvalResponse, EvalWorker, ExportDone, ImportDone};
+use crate::gizmo::{GizmoDrag, GizmoHandle, GizmoMode};
 use crate::palette::PaletteAction;
 use crate::ui;
 use crate::viewport;
@@ -78,6 +79,16 @@ pub struct ForgeApp {
     /// Per-body BVHs for measurement raycasts (rebuilt on evaluation).
     measure_bvhs: Vec<(BodyId, Bvh)>,
     measure_bvhs_stale: bool,
+
+    /// 3D drag manipulator (W-01): translate or rotate handles.
+    pub gizmo_mode: GizmoMode,
+    /// Active gizmo drag (W-01); the drag owns its undo commit.
+    pub gizmo_drag: Option<GizmoDrag>,
+    /// Hovered gizmo handle this frame (W-01 highlight).
+    pub(crate) gizmo_hover: Option<GizmoHandle>,
+    /// The primary button is (or was, until this frame's click check) held
+    /// on a gizmo handle: pick-clicks are suppressed (W-01).
+    pub(crate) gizmo_press_on_handle: bool,
 
     /// Status line text.
     pub status: String,
@@ -166,6 +177,10 @@ impl ForgeApp {
             measure_label: None,
             measure_bvhs: Vec::new(),
             measure_bvhs_stale: true,
+            gizmo_mode: GizmoMode::default(),
+            gizmo_drag: None,
+            gizmo_hover: None,
+            gizmo_press_on_handle: false,
             status,
             tokio_rt,
             export_tx,
@@ -579,6 +594,15 @@ impl eframe::App for ForgeApp {
                     self.scene.show_edges = self.render_options.show_edges;
                     self.scene.version += 1;
                 }
+                // W-01 gizmo mode shortcuts (not while typing in a field).
+                if i.key_pressed(egui::Key::T) && !ctx.egui_wants_keyboard_input() {
+                    self.gizmo_mode = GizmoMode::Translate;
+                    self.set_status("Gizmo: translate (T) — grab an axis arrow or plane");
+                }
+                if i.key_pressed(egui::Key::R) && !ctx.egui_wants_keyboard_input() {
+                    self.gizmo_mode = GizmoMode::Rotate;
+                    self.set_status("Gizmo: rotate (R) — grab a ring");
+                }
             }
         });
 
@@ -637,12 +661,17 @@ impl eframe::App for ForgeApp {
 
         ui::palette_overlay(&ctx, self);
 
-        // Keep repainting while evaluating / picking (the 3D view is
-        // continuously interactive at 60 FPS, NFR-PER-02).
-        if self.eval_pending || self.pick_requested {
+        // Keep repainting while evaluating / picking / dragging the gizmo
+        // (the 3D view is continuously interactive at 60 FPS, NFR-PER-02).
+        if self.eval_pending || self.pick_requested || self.gizmo_drag.is_some() {
             ctx.request_repaint();
         }
         self.eval_requested_this_frame = false;
+        // Release the gizmo press flag once the button is up *and* the
+        // click check of this frame has run (W-01).
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.gizmo_press_on_handle = false;
+        }
     }
 
     fn on_exit(&mut self) {

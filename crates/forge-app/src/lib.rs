@@ -12,6 +12,7 @@
 
 pub mod app;
 pub mod background;
+pub mod gizmo;
 pub mod palette;
 pub mod ui;
 pub mod viewport;
