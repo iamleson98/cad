@@ -116,8 +116,8 @@ jobs:
 
       - name: Build the browser bundle
         working-directory: crates/forge-app
-        env:
-          # trunk 0.21 rejects a non-empty NO_COLOR; GitHub runners
-          # export NO_COLOR=1 — clear it for this step only.
-          NO_COLOR: ""
-        run: trunk build --release
+        # trunk 0.21 rejects a set NO_COLOR (GitHub runners export
+        # NO_COLOR=1): it derives --no-color with no value and the arg
+        # parser fails. `env -u` actually UNSETS it — an empty string
+        # is still "set" and trips the same bug (verified locally).
+        run: env -u NO_COLOR trunk build --release
