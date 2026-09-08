@@ -1,6 +1,6 @@
 //! The ForgeApp: main application state and update loop.
 
-use crate::background::{EvalRequest, EvalResponse, EvalWorker, ExportDone};
+use crate::background::{EvalRequest, EvalResponse, EvalWorker, ExportDone, ImportDone};
 use crate::palette::PaletteAction;
 use crate::ui;
 use crate::viewport;
@@ -68,6 +68,13 @@ pub struct ForgeApp {
     export_tx: std::sync::mpsc::Sender<ExportDone>,
     /// Finished export jobs (drained into the status line).
     export_rx: std::sync::mpsc::Receiver<ExportDone>,
+    /// Import job completion channel (I-01).
+    import_tx: std::sync::mpsc::Sender<ImportDone>,
+    /// Finished import jobs (drained into the feature tree).
+    import_rx: std::sync::mpsc::Receiver<ImportDone>,
+    /// Paths already imported this session (drag-and-drop dedup —
+    /// `raw.dropped_files` persists across frames after a drop).
+    imported_paths: std::collections::HashSet<PathBuf>,
 
     /// FPS estimate.
     frame_times: Vec<f32>,
@@ -113,6 +120,7 @@ impl ForgeApp {
             .build()
             .expect("tokio runtime");
         let (export_tx, export_rx) = std::sync::mpsc::channel();
+        let (import_tx, import_rx) = std::sync::mpsc::channel();
 
         let mut app = Self {
             doc,
@@ -137,6 +145,9 @@ impl ForgeApp {
             tokio_rt,
             export_tx,
             export_rx,
+            import_tx,
+            import_rx,
+            imported_paths: std::collections::HashSet::new(),
             frame_times: Vec::new(),
         };
         app.request_evaluation();
@@ -312,6 +323,71 @@ impl ForgeApp {
             });
         });
     }
+
+    /// Kick off a background mesh import (I-01): parse + weld + repair on a
+    /// blocking thread; the finished mesh arrives via `import_rx` and is
+    /// added to the feature tree in [`Self::poll_imports`].
+    pub fn import_file(&mut self, path: PathBuf) {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(forge_io::ImportFormat::from_extension);
+        let Some(format) = ext else {
+            self.set_status(format!(
+                "Unsupported import format: {} (use .stl or .obj)",
+                path.display()
+            ));
+            return;
+        };
+        let import_tx = self.import_tx.clone();
+        self.set_status(format!("Importing {}…", path.display()));
+        self.tokio_rt.spawn_blocking(move || {
+            let result = forge_io::import_mesh(format, &path).map_err(|e| format!("{e}"));
+            let _ = import_tx.send(ImportDone { path, result });
+        });
+    }
+
+    /// Add a finished import as an `ImportedMesh` feature (I-01).
+    fn add_imported_mesh(&mut self, path: &std::path::Path, mesh: forge_geometry::TriMesh) {
+        let source = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("mesh")
+            .to_string();
+        let feature =
+            forge_model::Feature::ImportedMesh(forge_model::ImportedMeshParams { source, mesh });
+        match self.doc.add_feature(feature.clone()) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(forge_model::Command::AddFeature { node }, &mut self.doc);
+                }
+                if let Some(label) = self
+                    .doc
+                    .tree
+                    .order()
+                    .last()
+                    .and_then(|id| self.doc.tree.get(*id))
+                    .map(|n| n.feature.label())
+                {
+                    self.set_status(format!("Imported {label}"));
+                }
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Drain finished background imports and add them to the tree.
+    fn poll_imports(&mut self) {
+        while let Ok(done) = self.import_rx.try_recv() {
+            match done.result {
+                Ok(mesh) => self.add_imported_mesh(&done.path, mesh),
+                Err(e) => self.set_status(format!("Import {} failed: {e}", done.path.display())),
+            }
+        }
+    }
 }
 
 /// Where the autosave lives.
@@ -336,6 +412,7 @@ impl eframe::App for ForgeApp {
         // Poll background jobs.
         self.poll_evaluation();
         self.poll_pick();
+        self.poll_imports();
         while let Ok(done) = self.export_rx.try_recv() {
             match done.result {
                 Ok(()) => self.set_status(format!("Exported {}", done.path.display())),
@@ -343,6 +420,26 @@ impl eframe::App for ForgeApp {
             }
         }
         self.maybe_autosave();
+
+        // Drag-and-drop mesh import (I-01): drop .stl/.obj files anywhere
+        // on the window to add them as mesh bodies. `raw.dropped_files`
+        // persists after the drop, so paths are imported once per session
+        // (re-import deliberately via the palette command instead).
+        let dropped: Vec<PathBuf> = ctx
+            .input(|i| {
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .map(|f| f.path().to_path_buf())
+                    .collect::<Vec<PathBuf>>()
+            })
+            .into_iter()
+            .filter(|p| !self.imported_paths.contains(p))
+            .collect();
+        for path in dropped {
+            self.imported_paths.insert(path.clone());
+            self.import_file(path);
+        }
 
         // Global shortcuts.
         ctx.input(|i| {

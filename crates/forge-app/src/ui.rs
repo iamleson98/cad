@@ -110,6 +110,80 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
 
         ui.separator();
 
+        // Display modes (W-05) + section view (W-02).
+        let mode = app.render_options.display_mode;
+        egui::ComboBox::from_id_salt("display-mode")
+            .selected_text(match mode {
+                forge_render::DisplayMode::Shaded => "◑ Shaded",
+                forge_render::DisplayMode::Wireframe => "⌗ Wireframe",
+                forge_render::DisplayMode::XRay => "◐ X-Ray",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut app.render_options.display_mode,
+                    forge_render::DisplayMode::Shaded,
+                    "◑ Shaded",
+                );
+                ui.selectable_value(
+                    &mut app.render_options.display_mode,
+                    forge_render::DisplayMode::Wireframe,
+                    "⌗ Wireframe (hidden line)",
+                );
+                ui.selectable_value(
+                    &mut app.render_options.display_mode,
+                    forge_render::DisplayMode::XRay,
+                    "◐ X-Ray (translucent)",
+                );
+            });
+        if ui
+            .button(if app.render_options.section.is_some() {
+                "Section ✓"
+            } else {
+                "Section"
+            })
+            .on_hover_text("Section view: cut the model with a plane")
+            .clicked()
+        {
+            PaletteAction::ToggleSection.run(app);
+        }
+        if let Some(section) = &mut app.render_options.section {
+            let mut axis = if section.normal[0] != 0.0 {
+                0
+            } else if section.normal[1] != 0.0 {
+                1
+            } else {
+                2
+            };
+            egui::ComboBox::from_id_salt("section-axis")
+                .selected_text(["X", "Y", "Z"][axis])
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut axis, 0, "cut ⟂ X");
+                    ui.selectable_value(&mut axis, 1, "cut ⟂ Y");
+                    ui.selectable_value(&mut axis, 2, "cut ⟂ Z");
+                });
+            let mut normal = [0.0f64; 3];
+            normal[axis] = if section.normal[axis] != 0.0 {
+                section.normal[axis].signum()
+            } else {
+                1.0
+            };
+            section.normal = normal;
+            let mut offset = section.offset;
+            let range = 200.0;
+            ui.add(
+                egui::Slider::new(&mut offset, -range..=range)
+                    .text("offset")
+                    .smart_aim(false),
+            );
+            if ui.button("Flip").clicked() {
+                section.normal = [-normal[0], -normal[1], -normal[2]];
+                section.offset = -section.offset;
+            }
+            section.offset = offset;
+        }
+
+        ui.separator();
+
         if ui
             .button("Save")
             .on_hover_text("Save .forgecad (Ctrl+S)")
@@ -182,6 +256,7 @@ pub fn tree_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 Feature::Mirror(_) => "⇄",
                 Feature::Hole(_) => "⌾",
                 Feature::Datum(_) => "▱",
+                Feature::ImportedMesh(_) => "⤓",
             };
 
             // S-05: sketch diagnostics badge (DOF / over-constrained).
@@ -710,6 +785,27 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
             ui.label(
                 egui::RichText::new(
                     "Datums are construction geometry: create sketches on them\n(palette: New Sketch on latest datum).",
+                )
+                .small()
+                .weak(),
+            );
+        }
+        Feature::ImportedMesh(p) => {
+            // I-01: read-only summary of the imported mesh body.
+            ui.label(format!("Source: {}", p.source));
+            ui.label(format!("Triangles: {}", p.mesh.tri_count()));
+            ui.label(format!("Vertices: {}", p.mesh.vertex_count()));
+            let closed = p.mesh.is_closed();
+            ui.label(format!(
+                "Watertight: {}",
+                if closed { "yes" } else { "no (open mesh)" }
+            ));
+            if closed {
+                ui.label(format!("Volume: {:.2} mm³", p.mesh.volume_signed()));
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Imported meshes are parametric-free bodies: booleans,\npatterns, mirrors and transforms all work on them.",
                 )
                 .small()
                 .weak(),

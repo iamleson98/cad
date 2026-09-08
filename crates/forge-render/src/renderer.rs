@@ -22,6 +22,45 @@ use forge_core::BodyId;
 use std::collections::BTreeMap;
 use wgpu::util::DeviceExt;
 
+/// Viewport display mode (W-05).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayMode {
+    /// Shaded PBR-ish surfaces (default). Edge overlay via `show_edges`.
+    #[default]
+    Shaded,
+    /// Hidden-line wireframe: flat ghost surfaces + screen-space line
+    /// art + all feature edges.
+    Wireframe,
+    /// X-ray: every body translucent (alpha override) — the Fusion/
+    /// Onshape "ghost" mode for inspecting internals.
+    XRay,
+}
+
+/// Section-view clipping plane (W-02).
+///
+/// Fragments where `dot(normal, p) - offset < 0` are discarded in every
+/// pass (shaded, transparent, lines, picking), exposing a cut-away view
+/// of the interior.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SectionPlane {
+    /// Unit plane normal.
+    pub normal: [f64; 3],
+    /// Plane offset `d` (mm): the plane is `{p : dot(n, p) = d}`.
+    pub offset: f64,
+}
+
+impl SectionPlane {
+    /// GPU-ready `(xyz, w)` packing.
+    fn pack(&self) -> [f32; 4] {
+        [
+            self.normal[0] as f32,
+            self.normal[1] as f32,
+            self.normal[2] as f32,
+            self.offset as f32,
+        ]
+    }
+}
+
 /// Display options for one frame.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderOptions {
@@ -33,6 +72,12 @@ pub struct RenderOptions {
     pub show_grid: bool,
     /// Draw feature edges.
     pub show_edges: bool,
+    /// Display mode (W-05).
+    pub display_mode: DisplayMode,
+    /// Section-view clip plane; `None` = off (W-02).
+    pub section: Option<SectionPlane>,
+    /// X-ray alpha when `display_mode == XRay`.
+    pub xray_alpha: f32,
 }
 
 impl Default for RenderOptions {
@@ -42,6 +87,9 @@ impl Default for RenderOptions {
             line_darkness: 0.15,
             show_grid: true,
             show_edges: true,
+            display_mode: DisplayMode::default(),
+            section: None,
+            xray_alpha: 0.35,
         }
     }
 }
@@ -121,6 +169,9 @@ pub struct Renderer {
     mesh_pipeline: wgpu::RenderPipeline,
     transparent_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
+    /// Unclipped line pipeline (ground grid — never cut by the section
+    /// plane).
+    grid_pipeline: wgpu::RenderPipeline,
     pick_pipeline: wgpu::RenderPipeline,
     composite_pipeline: wgpu::RenderPipeline,
     composite_bgl: wgpu::BindGroupLayout,
@@ -343,8 +394,49 @@ impl Renderer {
             bind_group_layouts: &[Some(&camera_bgl), Some(&model_bgl)],
             immediate_size: 0,
         });
+        // Body feature edges: section-clipped entry points (W-02).
         let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("line-pipeline"),
+            layout: Some(&line_layout),
+            vertex: wgpu::VertexState {
+                module: &line_shader,
+                entry_point: Some("vs_main_clip"),
+                compilation_options: Default::default(),
+                buffers: &line_buffers,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &line_shader,
+                entry_point: Some("fs_main_clip"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: -1,
+                    slope_scale: -1.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        // Ground grid: the plain (unclipped) entry points — the reference
+        // grid must survive every section cut.
+        let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("grid-pipeline"),
             layout: Some(&line_layout),
             vertex: wgpu::VertexState {
                 module: &line_shader,
@@ -371,11 +463,7 @@ impl Renderer {
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState {
-                    constant: -1,
-                    slope_scale: -1.0,
-                    clamp: 0.0,
-                },
+                bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
@@ -540,6 +628,7 @@ impl Renderer {
             mesh_pipeline,
             transparent_pipeline,
             line_pipeline,
+            grid_pipeline,
             pick_pipeline,
             composite_pipeline,
             composite_bgl,
@@ -791,13 +880,34 @@ impl Renderer {
         let aspect = size.0 as f64 / size.1 as f64;
 
         // Camera uniform.
-        let cam_uniform = camera.uniform(aspect, (size.0 as f64, size.1 as f64));
+        let mut cam_uniform = camera.uniform(aspect, (size.0 as f64, size.1 as f64));
+        // Section-view clip plane + display mode flags (W-02/W-05).
+        if let Some(section) = &options.section {
+            cam_uniform.clip_plane = section.pack();
+            cam_uniform.render_params[0] = 1.0;
+        }
+        match options.display_mode {
+            DisplayMode::Shaded => {}
+            DisplayMode::Wireframe => cam_uniform.render_params[1] = 1.0,
+            DisplayMode::XRay => cam_uniform.render_params[2] = options.xray_alpha.clamp(0.05, 1.0),
+        }
         self.queue
             .write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam_uniform));
 
-        // Composite uniforms.
+        // Composite uniforms. params.z drives the hidden-line wireframe
+        // look (W-05); edge strength is boosted for crisper line art.
+        let wireframe = options.display_mode == DisplayMode::Wireframe;
         let composite = CompositeUniforms {
-            params: [options.edge_strength, options.line_darkness, 0.0, 0.0],
+            params: [
+                if wireframe {
+                    options.edge_strength * 1.5
+                } else {
+                    options.edge_strength
+                },
+                options.line_darkness,
+                if wireframe { 1.0 } else { 0.0 },
+                0.0,
+            ],
             background: [0.118, 0.121, 0.133, 1.0],
             line_color: [0.06, 0.07, 0.09, 1.0],
         };
@@ -869,8 +979,9 @@ impl Renderer {
             });
             rpass.set_pipeline(&self.mesh_pipeline);
             rpass.set_bind_group(0, &self.camera_bg, &[]);
+            let xray = options.display_mode == DisplayMode::XRay;
             for body in &self.bodies {
-                if body.style.transparent || body.style.color[3] < 1.0 {
+                if xray || body.style.transparent || body.style.color[3] < 1.0 {
                     continue;
                 }
                 rpass.set_bind_group(1, &body.model_bg, &[]);
@@ -921,6 +1032,7 @@ impl Renderer {
                 }
             }
             if options.show_grid {
+                rpass.set_pipeline(&self.grid_pipeline);
                 rpass.set_bind_group(1, &self.grid_bg, &[]);
                 rpass.set_vertex_buffer(0, self.grid_buf.slice(..));
                 rpass.draw(0..self.grid_count, 0..1);
@@ -930,10 +1042,11 @@ impl Renderer {
         // --- Pass 3: transparent bodies, back-to-front. ---
         {
             let eye = camera.eye();
+            let xray = options.display_mode == DisplayMode::XRay;
             let mut sorted: Vec<&GpuBody> = self
                 .bodies
                 .iter()
-                .filter(|b| b.style.transparent || b.style.color[3] < 1.0)
+                .filter(|b| xray || b.style.transparent || b.style.color[3] < 1.0)
                 .collect();
             sorted.sort_by_key(|b| {
                 let d = (b.centroid - eye).norm();

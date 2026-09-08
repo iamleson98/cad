@@ -70,6 +70,12 @@ impl Scene {
         self.version += 1;
     }
 
+    /// Force a GPU buffer rebuild on the next frame (e.g. after changing
+    /// `show_edges` or `edge_angle_deg` without new bodies).
+    pub fn touch(&mut self) {
+        self.version += 1;
+    }
+
     /// Highlight color for selected bodies.
     pub const SELECTED: [f32; 4] = [0.98, 0.66, 0.16, 1.0];
     /// Default body color.

@@ -1330,6 +1330,7 @@ dependencies = [
  "forge-sketch",
  "nalgebra",
  "rayon",
+ "ron",
  "serde",
  "thiserror 2.0.20",
 ]

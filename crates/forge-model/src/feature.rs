@@ -1,6 +1,7 @@
 //! Feature definitions: the parametric operations of the tree.
 
 use forge_core::{FeatureId, Plane, Point2, Point3, Vector3};
+use forge_geometry::TriMesh;
 use forge_sketch::Sketch;
 use serde::{Deserialize, Serialize};
 
@@ -289,6 +290,20 @@ impl Default for DatumParams {
     }
 }
 
+/// Parameters of an imported mesh body (I-01).
+///
+/// The mesh is *embedded* in the document (not referenced by path) so the
+/// native file is self-contained and the body survives file moves. The
+/// mesh arrives already repaired by `forge_io::import_mesh`: welded,
+/// degenerate-free, consistently oriented, normals computed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedMeshParams {
+    /// Source file name (display only).
+    pub source: String,
+    /// The repaired triangle mesh (model units, mm).
+    pub mesh: TriMesh,
+}
+
 /// A node of the parametric feature tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Feature {
@@ -326,6 +341,8 @@ pub enum Feature {
     /// User datum plane (D-01): construction geometry for sketch carriers
     /// and mirror/pattern references. Produces no body.
     Datum(DatumParams),
+    /// Imported mesh body (I-01): repaired STL/OBJ geometry as a body.
+    ImportedMesh(ImportedMeshParams),
 }
 
 impl Feature {
@@ -358,6 +375,9 @@ impl Feature {
                     format!("Datum: {base:?} tilted {:.0}\u{00b0}", angle.to_degrees())
                 }
             },
+            Feature::ImportedMesh(p) => {
+                format!("Import: {} ({} tris)", p.source, p.mesh.tri_count())
+            }
         }
     }
 
@@ -407,6 +427,7 @@ impl Feature {
             }
             Feature::Hole(p) => vec![p.profile, p.target],
             Feature::Datum(_) => Vec::new(),
+            Feature::ImportedMesh(_) => Vec::new(),
         }
     }
 }

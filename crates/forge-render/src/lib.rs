@@ -21,7 +21,7 @@ pub mod scene;
 pub mod shaders;
 
 pub use camera::{Camera, CameraUniform};
-pub use renderer::{PickResult, RenderOptions, Renderer};
+pub use renderer::{DisplayMode, PickResult, RenderOptions, Renderer, SectionPlane};
 pub use scene::{BodyStyle, Scene, SceneBody};
 
 /// Render crate error type.

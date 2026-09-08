@@ -28,8 +28,8 @@ pub use error::ModelError;
 pub use evaluate::{EvalBody, Evaluation, Evaluator};
 pub use feature::{
     BooleanFeature, CircularPatternParams, DatumParams, ExtrudeOp, ExtrudeParams, Feature,
-    HoleKind, HoleParams, LinearPatternParams, LoftParams, MirrorParams, PrimitiveKind,
-    PrimitiveParams, RevolveParams, SweepParams,
+    HoleKind, HoleParams, ImportedMeshParams, LinearPatternParams, LoftParams, MirrorParams,
+    PrimitiveKind, PrimitiveParams, RevolveParams, SweepParams,
 };
 pub use selection::{Selection, SelectionItem};
 pub use tree::{FeatureNode, FeatureTree};

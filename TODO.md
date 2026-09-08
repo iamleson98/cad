@@ -130,10 +130,15 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       Translate/rotate screen-space handles with axis picking, drag plane
       raycast, snapping (1 mm / 5°), replacing inspector sliders for
       transforms. Selected-body + feature-instance drag.
-- [ ] **W-02 Section view (clipping)** `(S)` `P1`
+- [x] **W-02 Section view (clipping)** `(S)` `P1`
       Arbitrary clipping plane per viewport: GPU-side clip distance in WGSL
       + cap-plane rendering (stencil technique) or exposed cutaway
       (simplest: clip only). Toolbar toggle + plane manipulator.
+      *Done: `SectionPlane` in every pass — mesh/transparent fragments,
+      feature-edge lines (separate clipped/unclipped line pipelines so the
+      ground grid survives the cut), and picking (clipped geometry can
+      not be selected). Toolbar: toggle + axis (X/Y/Z) + offset slider +
+      flip. Cap-plane rendering deferred to W-04 face selection.*
 - [ ] **W-03 Depth-peeled transparency** `(M)` `P1`
       Dual depth peeling (8–16 layers) replacing sorted blending; correct
       interpenetrating transparent geometry (documented in render TODO).
@@ -141,9 +146,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       Picking granularity beyond bodies: ray→BVH→triangle → face cluster
       (coplanar/normal-threshold flood), edge chains (sharp edge sets),
       vertex snap. Prerequisite for fillet/chamfer/shell/draft UI.
-- [ ] **W-05 Display modes** `(S)` `P2`
+- [x] **W-05 Display modes** `(S)` `P2`
       Wireframe / hidden-line (depth-precision lines) / shaded / shaded+
       edges / x-ray (opacity slider) / section — viewport toolbar presets.
+      *Done: toolbar combo — Shaded / Wireframe (hidden-line: flat ghost
+      surfaces + screen-space edge-detect line art + all feature edges,
+      0° threshold) / X-Ray (alpha override routes every body through the
+      sorted transparency pass). Section view = W-02. Wireframe-of-curved-
+      surfaces shows feature edges, not tessellation diagonals (by
+      design: coplanar edges are excluded). Opacity slider folded into
+      xray_alpha; per-body material editor = W-07.*
 - [ ] **W-06 Ambient occlusion (SSAO/GTAO)** `(M)` `P3`
       Half-res depth+normal GTAO pass, bilateral upsample; brings parity
       with Fusion/Onshape viewport quality.
@@ -158,9 +170,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 
 ## Wave 4 — Interoperability
 
-- [ ] **I-01 STL/OBJ import as mesh bodies** `(S)` `P1`
+- [x] **I-01 STL/OBJ import as mesh bodies** `(S)` `P1`
       Import → weld → normal-consistency repair → mesh body feature;
       enables boolean workflow on imported meshes. (Export already done.)
+      *Done: `forge_io::import_mesh` + OBJ reader (quad fan-triangulation,
+      a/t/b face entries, negative indices) + `TriMesh::repair_orientation`
+      (BFS manifold-edge propagation + volume-sign outward fix) —
+      `Feature::ImportedMesh` embeds the repaired mesh in the document
+      (RON round-trip tested), booleans/patterns/mirrors work on imported
+      bodies (volume-exact cut test). UX: drag-and-drop .stl/.obj onto the
+      window + palette import command. 3MF still open (I-02).*
 - [ ] **I-02 3MF export/import** `(M)` `P2`
       ZIP container + XML mesh (with units + optional color), production
       3D-print format; import for mesh bodies.

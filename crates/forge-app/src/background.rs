@@ -130,3 +130,12 @@ pub struct ExportDone {
     /// Result.
     pub result: Result<(), String>,
 }
+
+/// A completed import job notification (I-01): the repaired mesh is added
+/// to the feature tree on the UI thread.
+pub struct ImportDone {
+    /// Source file path.
+    pub path: std::path::PathBuf,
+    /// The repaired, welded mesh (or the error text).
+    pub result: Result<forge_geometry::TriMesh, String>,
+}

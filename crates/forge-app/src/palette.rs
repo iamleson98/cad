@@ -219,6 +219,31 @@ pub fn entries() -> Vec<PaletteEntry> {
             keywords: "file export mesh",
             action: ExportGLTF,
         },
+        PaletteEntry {
+            label: "Import mesh from current directory (import.stl / import.obj)",
+            keywords: "file import mesh stl obj load",
+            action: ImportMeshDir,
+        },
+        PaletteEntry {
+            label: "Display: shaded",
+            keywords: "view display mode shaded render",
+            action: DisplayShaded,
+        },
+        PaletteEntry {
+            label: "Display: wireframe (hidden line)",
+            keywords: "view display mode wireframe hidden line render",
+            action: DisplayWireframe,
+        },
+        PaletteEntry {
+            label: "Display: x-ray (translucent)",
+            keywords: "view display mode xray ghost transparent render",
+            action: DisplayXRay,
+        },
+        PaletteEntry {
+            label: "Section view: toggle cut plane",
+            keywords: "view section clip cut slice",
+            action: ToggleSection,
+        },
     ]
 }
 
@@ -264,6 +289,13 @@ pub enum PaletteAction {
     ExportSTL,
     ExportOBJ,
     ExportGLTF,
+    /// Import a mesh from `import.stl` / `import.obj` in the current
+    /// directory (I-01); drag-and-drop is the primary import path.
+    ImportMeshDir,
+    DisplayShaded,
+    DisplayWireframe,
+    DisplayXRay,
+    ToggleSection,
 }
 
 /// Simple subsequence fuzzy match score; `usize::MAX` means no match.
@@ -371,6 +403,37 @@ impl PaletteAction {
             ExportSTL => app.export_mesh(forge_io::ExportFormat::Stl),
             ExportOBJ => app.export_mesh(forge_io::ExportFormat::Obj),
             ExportGLTF => app.export_mesh(forge_io::ExportFormat::Gltf),
+
+            ImportMeshDir => {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let candidates = [cwd.join("import.stl"), cwd.join("import.obj")];
+                let Some(path) = candidates.iter().find(|p| p.is_file()) else {
+                    app.set_status(
+                        "No import.stl / import.obj in the current directory — \
+                         or drag a file onto the window",
+                    );
+                    return;
+                };
+                app.import_file(path.clone());
+            }
+
+            DisplayShaded => app.set_display_mode(forge_render::DisplayMode::Shaded),
+            DisplayWireframe => app.set_display_mode(forge_render::DisplayMode::Wireframe),
+            DisplayXRay => app.set_display_mode(forge_render::DisplayMode::XRay),
+
+            ToggleSection => {
+                let enabled = app.render_options.section.is_some();
+                if enabled {
+                    app.render_options.section = None;
+                    app.set_status("Section view off");
+                } else {
+                    app.render_options.section = Some(forge_render::SectionPlane {
+                        normal: [1.0, 0.0, 0.0],
+                        offset: 0.0,
+                    });
+                    app.set_status("Section view on — adjust the plane in the viewport toolbar");
+                }
+            }
         }
     }
 }
@@ -392,6 +455,22 @@ impl ForgeApp {
             }
             Err(e) => self.set_status(format!("{e}")),
         }
+    }
+
+    /// Switch the viewport display mode (W-05). Wireframe pulls *all*
+    /// feature edges (angle threshold 0 = every non-coplanar edge + all
+    /// boundary edges) instead of just sharp ones, and forces the edge
+    /// overlay on; leaving wireframe restores the 40° default.
+    pub(crate) fn set_display_mode(&mut self, mode: forge_render::DisplayMode) {
+        let wire = mode == forge_render::DisplayMode::Wireframe;
+        self.render_options.display_mode = mode;
+        if self.scene.show_edges != (wire || self.render_options.show_edges) {
+            self.render_options.show_edges = wire || self.render_options.show_edges;
+            self.scene.show_edges = self.render_options.show_edges;
+        }
+        self.scene.edge_angle_deg = if wire { 0.0 } else { 40.0 };
+        self.scene.touch(); // rebuild line buffers for the new threshold
+        self.set_status(format!("Display mode: {mode:?}"));
     }
 
     /// Add a sketch with a parametric rectangle on a datum plane.

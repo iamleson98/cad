@@ -73,6 +73,57 @@ impl ExportFormat {
     }
 }
 
+/// Supported import formats (I-01: mesh bodies from interchange files).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportFormat {
+    /// STL (binary or ASCII, auto-detected).
+    Stl,
+    /// Wavefront OBJ.
+    Obj,
+}
+
+impl ImportFormat {
+    /// Detect the format from a file extension (case-insensitive).
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext.to_ascii_lowercase().as_str() {
+            "stl" => Some(ImportFormat::Stl),
+            "obj" => Some(ImportFormat::Obj),
+            _ => None,
+        }
+    }
+
+    /// Canonical file extension.
+    pub fn extension(&self) -> &'static str {
+        match self {
+            ImportFormat::Stl => "stl",
+            ImportFormat::Obj => "obj",
+        }
+    }
+}
+
+/// Import a mesh file (STL or OBJ) as a repaired, welded [`TriMesh`]
+/// ready to become a mesh body feature (I-01).
+///
+/// The pipeline is: parse → weld (`WELD_EPS`) → drop degenerate triangles
+/// → orient-consistency repair (BFS across shared edges + volume-sign
+/// outward fix) → recompute vertex normals. Boolean workflows work on the
+/// imported body immediately.
+pub fn import_mesh(
+    format: ImportFormat,
+    path: &std::path::Path,
+) -> Result<forge_geometry::TriMesh> {
+    if !path.is_file() {
+        return Err(IoError::Malformed(format!(
+            "file not found: {}",
+            path.display()
+        )));
+    }
+    match format {
+        ImportFormat::Stl => stl::read_stl(path),
+        ImportFormat::Obj => obj::read_obj(path),
+    }
+}
+
 /// Export meshes in the given format to `path`.
 pub fn export(format: ExportFormat, path: &std::path::Path, meshes: &[ExportMesh]) -> Result<()> {
     if meshes.is_empty() {

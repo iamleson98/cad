@@ -217,6 +217,10 @@ impl Camera {
                 1.0 / viewport.0 as f32,
                 1.0 / viewport.1 as f32,
             ],
+            // Section-view clip plane + display-mode flags are frame
+            // state, filled in by the renderer after this call.
+            clip_plane: [0.0; 4],
+            render_params: [0.0; 4],
         }
     }
 }
@@ -235,6 +239,12 @@ pub struct CameraUniform {
     pub light_dir: [f32; 4],
     /// near, far, 1/width, 1/height (pixels).
     pub depth_params: [f32; 4],
+    /// Section-view clip plane (xyz = unit normal, w = offset; fragments
+    /// with `dot(n, p) - w < 0` are discarded) — W-02.
+    pub clip_plane: [f32; 4],
+    /// Render mode flags (W-05): x = clipping on, y = wireframe, z = x-ray
+    /// alpha (0 = off), w = spare.
+    pub render_params: [f32; 4],
 }
 
 #[cfg(test)]

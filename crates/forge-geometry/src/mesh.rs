@@ -407,6 +407,96 @@ impl TriMesh {
         self.indices = new_indices;
         self.normals = None;
     }
+
+    /// Make triangle orientations consistent by BFS propagation across
+    /// shared edges (I-01): whenever two triangles share an edge, they must
+    /// traverse it in opposite directions. Triangles on the negative side
+    /// of a shared edge are flipped. Disconnected components are repaired
+    /// independently; non-manifold edges do not propagate.
+    ///
+    /// After propagation, the largest component's global orientation is
+    /// corrected to *outward* by the sign of the signed volume, so an
+    /// inside-out soup imports as a valid solid.
+    ///
+    /// Returns `true` if any triangle was flipped.
+    pub fn repair_orientation(&mut self) -> bool {
+        let tri_count = self.tri_count();
+        if tri_count == 0 {
+            return false;
+        }
+
+        // Undirected edge -> incident (triangle, direction) pairs.
+        let mut edge_tris: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for t in 0..tri_count {
+            let [a, b, c] = self.triangle_idx(t);
+            let key = |x: u32, y: u32| (x.min(y), x.max(y));
+            edge_tris.entry(key(a, b)).or_default().push(t);
+            edge_tris.entry(key(b, c)).or_default().push(t);
+            edge_tris.entry(key(c, a)).or_default().push(t);
+        }
+
+        let mut flipped = false;
+        let mut visited = vec![false; tri_count];
+
+        for seed in 0..tri_count {
+            if visited[seed] {
+                continue;
+            }
+            // BFS the connected component, flipping neighbors that disagree.
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back(seed);
+            visited[seed] = true;
+            while let Some(t) = queue.pop_front() {
+                let [a, b, c] = self.triangle_idx(t);
+                // Each directed edge (a, b) of triangle t: the neighbor must
+                // use (b, a).
+                for (x, y) in [(a, b), (b, c), (c, a)] {
+                    let key = (x.min(y), x.max(y));
+                    let Some(tris) = edge_tris.get(&key) else {
+                        continue;
+                    };
+                    // Only propagate through manifold edges (exactly 2
+                    // incident triangles).
+                    if tris.len() != 2 {
+                        continue;
+                    }
+                    let other = tris[0] ^ tris[1] ^ t; // the partner index
+                    if visited[other] {
+                        continue;
+                    }
+                    visited[other] = true;
+                    // Does the neighbor traverse the shared edge in the
+                    // opposite direction?
+                    let [p, q, r] = self.triangle_idx(other);
+                    let agree = (p, q) == (y, x) || (q, r) == (y, x) || (r, p) == (y, x);
+                    if !agree {
+                        let k = other * 3;
+                        self.indices.swap(k + 1, k + 2);
+                        flipped = true;
+                    }
+                    queue.push_back(other);
+                }
+            }
+        }
+
+        if flipped {
+            self.normals = None;
+        }
+
+        // Global outward correction: a consistently oriented *closed* mesh
+        // must have positive signed volume. If the soup was inside-out,
+        // flip every triangle.
+        if self.is_closed() && self.volume_signed() < 0.0 {
+            for t in 0..self.tri_count() {
+                let k = t * 3;
+                self.indices.swap(k + 1, k + 2);
+            }
+            flipped = true;
+            self.normals = None;
+        }
+
+        flipped
+    }
 }
 
 #[cfg(test)]
@@ -464,5 +554,47 @@ mod tests {
         let sharp = m.sharp_edges(45.0_f64.to_radians());
         assert_eq!(sharp.len(), 12, "a cube has 12 feature edges");
         assert!(m.boundary_edges().is_empty());
+    }
+
+    #[test]
+    fn repair_orientation_flips_inconsistent_soup() {
+        // A box with one face's winding flipped: volume is wrong and the
+        // soup is inconsistently oriented.
+        let mut m = unit_box();
+        let k = 3 * 3; // triangle 3
+        m.indices.swap(k + 1, k + 2);
+        assert!(m.volume_signed() - 1.0 < -0.1, "volume disturbed");
+
+        let flipped = m.repair_orientation();
+        assert!(flipped, "repair must report flips");
+        assert!(m.is_closed(), "topology untouched");
+        assert!(
+            (m.volume_signed() - 1.0).abs() < 1e-9,
+            "volume restored, got {}",
+            m.volume_signed()
+        );
+    }
+
+    #[test]
+    fn repair_orientation_fixes_inside_out_mesh() {
+        // Fully inside-out box (all windings reversed) -> negative volume.
+        let mut m = unit_box();
+        for t in 0..m.tri_count() {
+            let k = t * 3;
+            m.indices.swap(k + 1, k + 2);
+        }
+        assert!(m.volume_signed() < 0.0);
+        assert!(m.repair_orientation());
+        assert!(
+            (m.volume_signed() - 1.0).abs() < 1e-9,
+            "inside-out soup imports as a valid solid"
+        );
+    }
+
+    #[test]
+    fn repair_orientation_idempotent_on_valid_mesh() {
+        let mut m = unit_box();
+        assert!(!m.repair_orientation(), "valid mesh needs no flips");
+        assert!((m.volume_signed() - 1.0).abs() < 1e-9);
     }
 }

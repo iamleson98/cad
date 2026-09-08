@@ -4,44 +4,63 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC — weekly cross-platform smoke
+
+# Cancel superseded runs on the same ref — rapid pushes never queue up.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  check:
-    name: Check + clippy + test
+  ci:
+    name: fmt + check + clippy + test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust toolchain (stable + clippy + rustfmt)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
-      - name: Cache cargo registry + build
+      # One job = one runner = one shared target/ dir: clippy and tests
+      # reuse the artifacts `cargo check` produced instead of recompiling.
+      # shared-key lets PRs and branches reuse the cache seeded by main,
+      # so follow-up runs drop to ~2-3 minutes.
+      - name: Cache cargo registry + build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forgecad-ci
 
+      # Fastest-fail-first: fmt (seconds) → check (compiles once) →
+      # clippy (incremental) → tests (links + runs).
       - name: Format check
         run: cargo fmt --all --check
 
-      - name: Compile check (all targets)
-        run: cargo check --workspace --all-targets
+      - name: Compile check (all targets, locked deps)
+        run: cargo check --workspace --all-targets --locked
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Tests (unit + doc)
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
-      - name: Release build (forge-app links)
-        run: cargo build --release -p forge-app
-
+  # Cross-platform compile smoke — manual + weekly only, so day-to-day
+  # pushes stay on a single fast Linux job.
   cross-platform:
-    name: Cross-compile smoke
+    name: cargo check (${{ matrix.target }})
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -51,6 +70,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -61,6 +81,8 @@ jobs:
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forgecad-cross
 
       - name: Check workspace (compiles on target)
-        run: cargo check --workspace
+        run: cargo check --workspace --locked

@@ -525,6 +525,18 @@ impl Evaluator {
                 })?;
                 boolean(target_mesh, &tool, CsgOp::Difference)?
             }
+
+            Feature::ImportedMesh(p) => {
+                if p.mesh.tri_count() == 0 {
+                    return Err(crate::ModelError::Invalid(format!(
+                        "imported mesh {} is empty",
+                        p.source
+                    )));
+                }
+                let mut mesh = p.mesh.clone();
+                mesh.ensure_normals();
+                mesh
+            }
         };
 
         Ok(Some(CachedResult::Body(mesh)))
@@ -1058,6 +1070,87 @@ mod tests {
         let result2 = ev.evaluate(&mut doc);
         assert_eq!(result2.reused, 1);
         assert_eq!(result2.evaluated, 0);
+    }
+
+    // ---- Imported mesh bodies (I-01) ------------------------------------
+
+    fn import_box(doc: &mut Document, dims: Vector3) -> FeatureId {
+        let mesh = forge_geometry::primitives::box_from_center_extents(Point3::origin(), dims);
+        doc.add_feature(Feature::ImportedMesh(crate::ImportedMeshParams {
+            source: "test_box.stl".into(),
+            mesh,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn evaluates_imported_mesh_body_with_normals() {
+        let mut doc = Document::new("import");
+        import_box(&mut doc, Vector3::new(3.0, 4.0, 5.0));
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.bodies.len(), 1);
+        let body = &result.bodies[0];
+        assert_eq!(body.mesh.tri_count(), 12);
+        assert!(
+            body.mesh.normals.is_some(),
+            "evaluation ensures normals for rendering"
+        );
+        assert!((body.mesh.volume_signed() - 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn boolean_cut_works_on_imported_body() {
+        // The point of I-01: imported meshes enter the boolean workflow.
+        let mut doc = Document::new("import-boolean");
+        let imported = import_box(&mut doc, Vector3::new(20.0, 20.0, 20.0));
+        let tool = add_box(
+            &mut doc,
+            "tool",
+            Point3::origin(),
+            Vector3::new(10.0, 10.0, 10.0),
+        );
+        doc.add_feature(Feature::Boolean(crate::BooleanFeature {
+            op: forge_geometry::CsgOp::Difference,
+            operands: vec![imported, tool],
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // The boolean consumed both operands into one body.
+        assert_eq!(result.bodies.len(), 1);
+        let v = result.bodies[0].mesh.volume_signed();
+        assert!(
+            (v - (20.0 * 20.0 * 20.0 - 10.0 * 10.0 * 10.0)).abs() < 1e-6,
+            "cut volume {v}"
+        );
+    }
+
+    #[test]
+    fn imported_mesh_serializes_roundtrip_ron() {
+        // Serialization check without forge-io (no circular dep): the
+        // feature round-trips through RON in-place.
+        let mesh = forge_geometry::primitives::box_from_center_extents(
+            Point3::origin(),
+            Vector3::new(2.0, 3.0, 4.0),
+        );
+        let feature = Feature::ImportedMesh(crate::ImportedMeshParams {
+            source: "box.stl".into(),
+            mesh: mesh.clone(),
+        });
+        let ron = ron::to_string(&feature).unwrap();
+        let back: Feature = ron::from_str(&ron).unwrap();
+        match back {
+            Feature::ImportedMesh(p) => {
+                assert_eq!(p.source, "box.stl");
+                assert_eq!(p.mesh.tri_count(), mesh.tri_count());
+                assert!((p.mesh.volume_signed() - 24.0).abs() < 1e-9);
+            }
+            other => panic!("wrong feature {other:?}"),
+        }
     }
 
     // ---- Patterns & mirror (F-01/02/03) --------------------------------

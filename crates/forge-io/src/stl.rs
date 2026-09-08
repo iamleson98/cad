@@ -128,6 +128,8 @@ fn read_binary(data: &[u8], count: usize) -> Result<TriMesh> {
         mesh.push_triangle(tri[0], tri[1], tri[2]);
     }
     mesh.weld(forge_geometry::WELD_EPS);
+    mesh.remove_degenerate(1e-12);
+    mesh.repair_orientation();
     mesh.compute_vertex_normals();
     Ok(mesh)
 }
@@ -165,6 +167,8 @@ fn read_ascii(data: &[u8]) -> Result<TriMesh> {
         return Err(IoError::Malformed("no triangles found in ASCII STL".into()));
     }
     mesh.weld(forge_geometry::WELD_EPS);
+    mesh.remove_degenerate(1e-12);
+    mesh.repair_orientation();
     mesh.compute_vertex_normals();
     Ok(mesh)
 }
