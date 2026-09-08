@@ -146,6 +146,17 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
         {
             PaletteAction::ToggleSection.run(app);
         }
+        if ui
+            .button(if app.measure_mode {
+                "Measure ✓"
+            } else {
+                "Measure"
+            })
+            .on_hover_text("Measure: click two surface points for distance + angle")
+            .clicked()
+        {
+            PaletteAction::ToggleMeasure.run(app);
+        }
         if let Some(section) = &mut app.render_options.section {
             let mut axis = if section.normal[0] != 0.0 {
                 0

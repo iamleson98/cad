@@ -162,9 +162,15 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 - [ ] **W-07 Materials & studio lighting** `(M)` `P3`
       PBR material editor (metal/rough workflow), env-map (split-sum or
       prefiltered), 3-point studio presets, scene background options.
-- [ ] **W-08 Measurement tool** `(S)` `P2`
+- [x] **W-08 Measurement tool** `(S)` `P2`
       Two-pick measure (point-point, edge-edge, face-face distances,
       angles) with persistent viewport labels.
+      *Done: measure mode (palette + toolbar) picks exact surface points
+      via CPU ray→BVH→Möller–Trumbore (rebuilt per evaluation), shows
+      the span line + persistent viewport label with distance and
+      hit-face normal angle; empty-space click restarts; third click
+      starts a fresh measurement. Edge/edge + face/face distance modes
+      land with W-04 sub-body selection.*
 - [ ] **W-09 Infinite ground + shadows** `(S)` `P3`
       Shadow-only ground plane (shadow-mapped), grid fade, horizon.
 

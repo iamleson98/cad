@@ -4,7 +4,8 @@ use crate::background::{EvalRequest, EvalResponse, EvalWorker, ExportDone, Impor
 use crate::palette::PaletteAction;
 use crate::ui;
 use crate::viewport;
-use forge_core::{BodyId, FeatureId};
+use forge_core::{BodyId, FeatureId, Point3};
+use forge_geometry::Bvh;
 use forge_model::{Document, Evaluation, Selection, SelectionItem};
 use forge_render::{Camera, RenderOptions, Renderer, Scene, SceneBody};
 use forge_sketch::SolveReport;
@@ -14,6 +15,15 @@ use std::time::{Duration, Instant};
 
 /// Autosave interval (NFR-RES-03).
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(120);
+
+/// One measurement pick (W-08): a surface hit point and its face normal.
+#[derive(Debug, Clone, Copy)]
+pub struct MeasurePick {
+    /// World-space hit point.
+    pub point: Point3,
+    /// Unit face normal at the hit.
+    pub normal: forge_core::Vector3,
+}
 
 /// The application.
 pub struct ForgeApp {
@@ -58,6 +68,16 @@ pub struct ForgeApp {
 
     /// A pick result is awaited (poll the renderer each frame).
     pub pick_requested: bool,
+
+    /// Measurement tool (W-08): picking surface points.
+    pub measure_mode: bool,
+    /// Picked surface points (0..=2, in click order).
+    pub measure_picks: Vec<MeasurePick>,
+    /// Label text of the finished measurement (distance + angle).
+    pub measure_label: Option<String>,
+    /// Per-body BVHs for measurement raycasts (rebuilt on evaluation).
+    measure_bvhs: Vec<(BodyId, Bvh)>,
+    measure_bvhs_stale: bool,
 
     /// Status line text.
     pub status: String,
@@ -141,6 +161,11 @@ impl ForgeApp {
             palette_open: false,
             palette_query: String::new(),
             pick_requested: false,
+            measure_mode: false,
+            measure_picks: Vec::new(),
+            measure_label: None,
+            measure_bvhs: Vec::new(),
+            measure_bvhs_stale: true,
             status,
             tokio_rt,
             export_tx,
@@ -183,6 +208,7 @@ impl ForgeApp {
                 EvalResponse::Done(ev) => {
                     self.eval_pending = false;
                     self.last_evaluation = Some(ev);
+                    self.measure_bvhs_stale = true;
                     self.rebuild_scene();
                 }
             }
@@ -386,6 +412,84 @@ impl ForgeApp {
                 Ok(mesh) => self.add_imported_mesh(&done.path, mesh),
                 Err(e) => self.set_status(format!("Import {} failed: {e}", done.path.display())),
             }
+        }
+    }
+
+    // ---- Measurement tool (W-08) ----------------------------------------
+
+    /// Rebuild per-body BVHs after an evaluation change.
+    fn rebuild_measure_bvhs(&mut self) {
+        let bvhs: Vec<(BodyId, Bvh)> = self
+            .last_evaluation
+            .iter()
+            .flat_map(|ev| ev.bodies.iter())
+            .map(|b| {
+                (
+                    b.id,
+                    Bvh::from_mesh_positions(&b.mesh.positions, &b.mesh.indices),
+                )
+            })
+            .collect();
+        self.measure_bvhs = bvhs;
+        self.measure_bvhs_stale = false;
+    }
+
+    /// A viewport click in measure mode: raycast every body, record the
+    /// surface hit (point + face normal). Empty space restarts the pick.
+    pub fn measure_click(&mut self, ndc: (f64, f64), aspect: f64) {
+        if self.measure_bvhs_stale {
+            self.rebuild_measure_bvhs();
+        }
+        let ray = self.camera.ray_through_ndc(ndc, aspect);
+        let Some(ray) = ray else { return };
+        let far = self.camera.far;
+
+        let mut best: Option<(usize, f64, usize)> = None; // (body, t, triangle)
+        if let Some(ev) = &self.last_evaluation {
+            for (i, (body, (_, bvh))) in ev.bodies.iter().zip(self.measure_bvhs.iter()).enumerate()
+            {
+                if let Some(hit) = bvh.ray_cast(&body.mesh.positions, &body.mesh.indices, &ray, far)
+                {
+                    if best.map(|(_, t, _)| hit.t < t).unwrap_or(true) {
+                        best = Some((i, hit.t, hit.triangle as usize));
+                    }
+                }
+            }
+        }
+
+        let Some((body_idx, t, tri)) = best else {
+            // Clicked empty space: restart the measurement.
+            self.measure_picks.clear();
+            self.measure_label = None;
+            self.set_status("Measure: pick a first surface point");
+            return;
+        };
+
+        let point = ray.at(t);
+        let normal = self
+            .last_evaluation
+            .as_ref()
+            .and_then(|ev| ev.bodies.get(body_idx))
+            .and_then(|b| b.mesh.triangle_normal(tri))
+            .unwrap_or_else(forge_core::Vector3::z);
+
+        // Third click starts a fresh measurement.
+        if self.measure_picks.len() >= 2 {
+            self.measure_picks.clear();
+            self.measure_label = None;
+        }
+        self.measure_picks.push(MeasurePick { point, normal });
+
+        if self.measure_picks.len() == 2 {
+            let [a, b] = [self.measure_picks[0], self.measure_picks[1]];
+            let dist = (b.point - a.point).norm();
+            let cos = a.normal.dot(&b.normal).clamp(-1.0, 1.0);
+            let angle = cos.acos().to_degrees();
+            let label = format!("{dist:.3} mm \u{00b7} normals {angle:.1}\u{00b0}");
+            self.set_status(format!("Measure: {label}"));
+            self.measure_label = Some(label);
+        } else {
+            self.set_status("Measure: pick a second surface point");
         }
     }
 }

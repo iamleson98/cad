@@ -112,13 +112,22 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
     if let Some(click_pos) = response.interact_pointer_pos() {
         if response.clicked_by(egui::PointerButton::Primary) {
             let local = click_pos - rect.min;
-            let px = (
-                (local.x * pixels_per_point) as u32,
-                (local.y * pixels_per_point) as u32,
-            );
-            if let Some(renderer) = app.renderer() {
-                renderer.lock().unwrap().schedule_pick(px);
-                app.pick_requested = true;
+            if app.measure_mode {
+                // W-08: measurement picks use CPU raycasts (exact hit
+                // points), not the GPU id buffer.
+                let nx = (local.x / rect.width()) as f64 * 2.0 - 1.0;
+                let ny = 1.0 - (local.y / rect.height()) as f64 * 2.0;
+                let aspect = (rect.width() / rect.height()) as f64;
+                app.measure_click((nx, ny), aspect);
+            } else {
+                let px = (
+                    (local.x * pixels_per_point) as u32,
+                    (local.y * pixels_per_point) as u32,
+                );
+                if let Some(renderer) = app.renderer() {
+                    renderer.lock().unwrap().schedule_pick(px);
+                    app.pick_requested = true;
+                }
             }
         }
     }
@@ -138,8 +147,78 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
             .add(egui_wgpu::Callback::new_paint_callback(rect, callback));
     }
 
+    // ---- Measurement overlay (W-08) ----
+    if app.measure_mode && !app.measure_picks.is_empty() {
+        draw_measurement(ui, app, rect);
+    }
+
     // ---- Navigation cube (FR-RD-04) ----
     navigation_cube(ui, &mut app.camera, rect);
+}
+
+/// Draw the active measurement: pick dots, the span line and the result
+/// label at the projected midpoint (W-08).
+fn draw_measurement(ui: &mut egui::Ui, app: &ForgeApp, rect: egui::Rect) {
+    let aspect = (rect.width() / rect.height()) as f64;
+    // Column-major glam -> nalgebra (f32 GPU precision is fine for labels).
+    let cols = app.camera.view_proj(aspect).to_cols_array();
+    let mut vp = nalgebra::Matrix4::<f32>::identity();
+    for c in 0..4 {
+        for r in 0..4 {
+            vp[(r, c)] = cols[c * 4 + r];
+        }
+    }
+    let project = |p: forge_core::Point3| -> Option<egui::Pos2> {
+        let clip = vp * nalgebra::Point4::new(p.x as f32, p.y as f32, p.z as f32, 1.0);
+        if clip.w <= 1e-6 {
+            return None; // behind the camera
+        }
+        let ndc = clip.coords / clip.w;
+        Some(egui::pos2(
+            rect.min.x + (ndc.x + 1.0) * 0.5 * rect.width(),
+            rect.min.y + (1.0 - ndc.y) * 0.5 * rect.height(),
+        ))
+    };
+
+    let picks: Vec<(egui::Pos2, forge_core::Point3)> = app
+        .measure_picks
+        .iter()
+        .filter_map(|m| project(m.point).map(|p| (p, m.point)))
+        .collect();
+    if picks.is_empty() {
+        return;
+    }
+
+    let painter = ui.painter().clone();
+    let accent = egui::Color32::from_rgb(255, 176, 32);
+    for (screen, _) in &picks {
+        painter.circle_filled(*screen, 4.0, accent);
+        painter.circle_stroke(*screen, 4.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+    }
+
+    if picks.len() == 2 {
+        let (a, b) = (picks[0].0, picks[1].0);
+        painter.line_segment([a, b], egui::Stroke::new(2.0, accent));
+        if let Some(label) = &app.measure_label {
+            let mid = egui::pos2((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+            // Offset the label above the line with a small backing panel
+            // so it stays readable over geometry.
+            let galley = painter.layout(
+                label.clone(),
+                egui::FontId::proportional(13.0),
+                egui::Color32::WHITE,
+                200.0,
+            );
+            let size = galley.size();
+            let pos = egui::pos2(mid.x - size.x * 0.5, mid.y - size.y - 10.0);
+            painter.rect_filled(
+                egui::Rect::from_min_size(pos - egui::vec2(4.0, 3.0), size + egui::vec2(8.0, 6.0)),
+                4.0,
+                egui::Color32::from_black_alpha(200),
+            );
+            painter.galley(pos, galley, egui::Color32::WHITE);
+        }
+    }
 }
 
 /// A small clickable orientation cube in the top-right corner.

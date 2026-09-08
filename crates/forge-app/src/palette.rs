@@ -244,6 +244,11 @@ pub fn entries() -> Vec<PaletteEntry> {
             keywords: "view section clip cut slice",
             action: ToggleSection,
         },
+        PaletteEntry {
+            label: "Measure: two-pick distance + angle",
+            keywords: "measure distance angle inspect dimension",
+            action: ToggleMeasure,
+        },
     ]
 }
 
@@ -296,6 +301,7 @@ pub enum PaletteAction {
     DisplayWireframe,
     DisplayXRay,
     ToggleSection,
+    ToggleMeasure,
 }
 
 /// Simple subsequence fuzzy match score; `usize::MAX` means no match.
@@ -433,6 +439,17 @@ impl PaletteAction {
                     });
                     app.set_status("Section view on — adjust the plane in the viewport toolbar");
                 }
+            }
+
+            ToggleMeasure => {
+                app.measure_mode = !app.measure_mode;
+                app.measure_picks.clear();
+                app.measure_label = None;
+                app.set_status(if app.measure_mode {
+                    "Measure: click two surface points in the viewport"
+                } else {
+                    "Measure tool off"
+                });
             }
         }
     }
