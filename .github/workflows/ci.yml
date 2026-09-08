@@ -6,7 +6,7 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: "0 4 * * 1" # Mondays 04:00 UTC — weekly cross-platform smoke
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC — keeps OS caches warm (7-day eviction)
 
 # Cancel superseded runs on the same ref — rapid pushes never queue up.
 concurrency:
@@ -18,35 +18,59 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
-  RUSTFLAGS: "-D warnings"
 
 jobs:
-  ci:
-    name: fmt + check + clippy + test
+  # Cheapest gate first: formatting is checked in seconds on a dedicated
+  # job, and the heavy 3-OS matrix only starts once it is clean.
+  fmt:
+    name: rustfmt
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (stable + clippy + rustfmt)
+      - name: Install Rust toolchain (stable + rustfmt)
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: rustfmt
 
-      # One job = one runner = one shared target/ dir: clippy and tests
-      # reuse the artifacts `cargo check` produced instead of recompiling.
-      # shared-key lets PRs and branches reuse the cache seeded by main,
-      # so follow-up runs drop to ~2-3 minutes.
+      - name: Format check
+        run: cargo fmt --all --check
+
+  # Full build + lint + test on every push, on all three desktop platforms:
+  # Linux (x86_64), Windows (x86_64-msvc), macOS (aarch64). The repo is
+  # public so hosted-runner minutes are free.
+  build-test:
+    name: ${{ matrix.os }} — check + clippy + test
+    needs: fmt
+    strategy:
+      # Report failures from every OS even if one fails first.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # rust-cache keys automatically include the runner OS + rustc version,
+      # so each platform gets its own cache; shared-key lets PRs/branches
+      # reuse the cache seeded by main. Cold first run per OS is ~15-25 min
+      # (wgpu + eframe are heavy); warm runs drop to a few minutes.
       - name: Cache cargo registry + build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: forgecad-ci
 
-      # Fastest-fail-first: fmt (seconds) → check (compiles once) →
-      # clippy (incremental) → tests (links + runs).
-      - name: Format check
-        run: cargo fmt --all --check
-
+      # Same runner = one shared target/ dir per OS: clippy and tests reuse
+      # the artifacts `cargo check` produced instead of recompiling.
+      # Fastest-fail-first: check (compiles once) → clippy (incremental) →
+      # tests (links + runs).
       - name: Compile check (all targets, locked deps)
         run: cargo check --workspace --all-targets --locked
 
@@ -55,34 +79,3 @@ jobs:
 
       - name: Tests (unit + doc)
         run: cargo test --workspace --locked
-
-  # Cross-platform compile smoke — manual + weekly only, so day-to-day
-  # pushes stay on a single fast Linux job.
-  cross-platform:
-    name: cargo check (${{ matrix.target }})
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo registry + build
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: forgecad-cross
-
-      - name: Check workspace (compiles on target)
-        run: cargo check --workspace --locked
