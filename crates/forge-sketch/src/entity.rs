@@ -83,25 +83,15 @@ impl SketchEntity {
     pub fn pack(&self, x: &mut Vec<f64>) {
         match self {
             SketchEntity::Point { p, .. } => x.extend([p.x, p.y]),
-            SketchEntity::Line { start, end, .. } => {
-                x.extend([start.x, start.y, end.x, end.y])
-            }
-            SketchEntity::Circle { center, radius, .. } => {
-                x.extend([center.x, center.y, *radius])
-            }
+            SketchEntity::Line { start, end, .. } => x.extend([start.x, start.y, end.x, end.y]),
+            SketchEntity::Circle { center, radius, .. } => x.extend([center.x, center.y, *radius]),
             SketchEntity::Arc {
                 center,
                 radius,
                 start_angle,
                 end_angle,
                 ..
-            } => x.extend([
-                center.x,
-                center.y,
-                *radius,
-                *start_angle,
-                *end_angle,
-            ]),
+            } => x.extend([center.x, center.y, *radius, *start_angle, *end_angle]),
             SketchEntity::Spline { control, .. } => {
                 for p in control {
                     x.extend([p.x, p.y]);
@@ -148,33 +138,32 @@ impl SketchEntity {
     /// Point addressed by a constraint role (start/end/center).
     /// Returns the point *and* the Jacobian rows with respect to this
     /// entity's parameters: `dp/dparams` as a 2×dof matrix.
-    pub fn point_with_jacobian(
-        &self,
-        role: &crate::PointRole,
-    ) -> Option<(Point2, Vec<[f64; 2]>)> {
+    pub fn point_with_jacobian(&self, role: &crate::PointRole) -> Option<(Point2, Vec<[f64; 2]>)> {
         match (self, role) {
             (SketchEntity::Point { p, .. }, crate::PointRole::Start)
             | (SketchEntity::Point { p, .. }, crate::PointRole::End) => {
                 Some((*p, vec![[1.0, 0.0], [0.0, 1.0]]))
             }
-            (SketchEntity::Line { start, .. }, crate::PointRole::Start) => Some((
-                *start,
-                vec![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]],
-            )),
-            (SketchEntity::Line { end, .. }, crate::PointRole::End) => Some((
-                *end,
-                vec![[0.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
-            )),
-            (SketchEntity::Circle { center, .. }, crate::PointRole::Center)
-            | (SketchEntity::Arc { center, .. }, crate::PointRole::Center) => {
-                Some((*center, vec![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]))
+            (SketchEntity::Line { start, .. }, crate::PointRole::Start) => {
+                Some((*start, vec![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]]))
             }
-            (SketchEntity::Arc {
-                center,
-                radius,
-                start_angle,
-                ..
-            }, crate::PointRole::Start) => {
+            (SketchEntity::Line { end, .. }, crate::PointRole::End) => {
+                Some((*end, vec![[0.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]))
+            }
+            (SketchEntity::Circle { center, .. }, crate::PointRole::Center)
+            | (SketchEntity::Arc { center, .. }, crate::PointRole::Center) => Some((
+                *center,
+                vec![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+            )),
+            (
+                SketchEntity::Arc {
+                    center,
+                    radius,
+                    start_angle,
+                    ..
+                },
+                crate::PointRole::Start,
+            ) => {
                 let p = Point2::new(
                     center.x + radius * start_angle.cos(),
                     center.y + radius * start_angle.sin(),
@@ -189,12 +178,15 @@ impl SketchEntity {
                 ];
                 Some((p, j))
             }
-            (SketchEntity::Arc {
-                center,
-                radius,
-                end_angle,
-                ..
-            }, crate::PointRole::End) => {
+            (
+                SketchEntity::Arc {
+                    center,
+                    radius,
+                    end_angle,
+                    ..
+                },
+                crate::PointRole::End,
+            ) => {
                 let p = Point2::new(
                     center.x + radius * end_angle.cos(),
                     center.y + radius * end_angle.sin(),
@@ -220,9 +212,7 @@ impl SketchEntity {
     /// Center (circles/arcs) or midpoint (lines).
     pub fn center(&self) -> Option<Point2> {
         match self {
-            SketchEntity::Circle { center, .. } | SketchEntity::Arc { center, .. } => {
-                Some(*center)
-            }
+            SketchEntity::Circle { center, .. } | SketchEntity::Arc { center, .. } => Some(*center),
             SketchEntity::Line { start, end, .. } => {
                 Some(Point2::from((start.coords + end.coords) * 0.5))
             }

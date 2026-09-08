@@ -25,7 +25,7 @@ pub mod units;
 
 pub use error::CoreError;
 pub use ids::{
-    BodyId, EdgeId, EntityId, FaceId, FeatureId, ParamId, SketchId, VertexId, IdAllocator,
+    BodyId, EdgeId, EntityId, FaceId, FeatureId, IdAllocator, ParamId, SketchId, VertexId,
 };
 pub use math::{
     lerp, ray_triangle, BBox3, Plane, Point2, Point3, Ray3, Transform, UnitVector3, Vector2,

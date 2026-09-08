@@ -175,10 +175,7 @@ impl Triangulation {
 
 /// Triangulate an outer contour (any orientation) with interior holes
 /// (any orientation) into CCW triangles.
-pub fn triangulate_with_holes(
-    outer: &[Point2],
-    holes: &[Vec<Point2>],
-) -> Result<Triangulation> {
+pub fn triangulate_with_holes(outer: &[Point2], holes: &[Vec<Point2>]) -> Result<Triangulation> {
     // 1. Combined vertex array and orientation normalization.
     let mut vertices: Vec<Point2> = outer.to_vec();
     dedup(&mut vertices);
@@ -227,7 +224,10 @@ pub fn triangulate_with_holes(
     // 3. Ear-clip the combined simple polygon.
     let triangles = ear_clip(&poly, &vertices)?;
 
-    Ok(Triangulation { vertices, triangles })
+    Ok(Triangulation {
+        vertices,
+        triangles,
+    })
 }
 
 /// Splice the hole `vertices[base..end]` (already CW) into `poly`.
@@ -243,9 +243,7 @@ fn splice_hole(poly: &mut Vec<u32>, vertices: &[Point2], base: usize, end: usize
         + hole
             .iter()
             .enumerate()
-            .min_by(|a, b| {
-                (a.1.x, a.1.y).partial_cmp(&(b.1.x, b.1.y)).expect("no NaN")
-            })
+            .min_by(|a, b| (a.1.x, a.1.y).partial_cmp(&(b.1.x, b.1.y)).expect("no NaN"))
             .map(|(i, _)| i)
             .expect("non-empty hole");
     let m = vertices[m_global];
@@ -270,11 +268,7 @@ fn splice_hole(poly: &mut Vec<u32>, vertices: &[Point2], base: usize, end: usize
         }
     }
     // Sort candidates by distance to m (nearest first).
-    candidates.sort_by_key(|&pos| {
-        (vertices[poly[pos] as usize] - m)
-            .norm()
-            .to_bits()
-    });
+    candidates.sort_by_key(|&pos| (vertices[poly[pos] as usize] - m).norm().to_bits());
 
     // Fallback pool: every polygon position, nearest first.
     if candidates.is_empty() {
@@ -306,7 +300,7 @@ fn splice_hole(poly: &mut Vec<u32>, vertices: &[Point2], base: usize, end: usize
 /// area). This is the classic bridging technique; the doubled bridge edge
 /// is excluded from the simplicity check as an exact reversal pair.
 fn try_splice(
-    poly: &Vec<u32>,
+    poly: &[u32],
     vertices: &[Point2],
     base: usize,
     end: usize,
@@ -432,7 +426,7 @@ fn ear_clip(poly: &[u32], vertices: &[Point2]) -> Result<Vec<[u32; 3]>> {
 
     loop {
         match ring.len() {
-            0 | 1 | 2 => break,
+            0..=2 => break,
             3 => {
                 let area = tri_area(
                     vertices[ring[0] as usize],
@@ -461,8 +455,8 @@ fn ear_clip(poly: &[u32], vertices: &[Point2]) -> Result<Vec<[u32; 3]>> {
             }
             // Any other vertex inside the ear?
             let mut blocked = false;
-            for k in 0..n {
-                let idx = ring[k] as usize;
+            for &rv in ring.iter() {
+                let idx = rv as usize;
                 if idx == ia || idx == ib || idx == ic {
                     continue;
                 }
@@ -542,7 +536,7 @@ mod tests {
         // The hole is tessellated to a 48-gon, so compare against the
         // polygonal area, not pi * r^2.
         let hole_area = signed_area(&hole).abs();
-        let tri = triangulate_with_holes(&square((-1.0, -1.0), (1.0, 1.0)), &[hole.clone()]).unwrap();
+        let tri = triangulate_with_holes(&square((-1.0, -1.0), (1.0, 1.0)), &[hole]).unwrap();
         let expected = 4.0 - hole_area;
         assert!(
             (tri.area() - expected).abs() < 1e-9,

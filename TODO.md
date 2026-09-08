@@ -1,0 +1,224 @@
+# ForgeCAD — Road to World-Class: TODO
+
+Gap analysis derived from a feature-matrix comparison against production 3D CAD
+systems (SolidWorks, Fusion 360, Onshape, FreeCAD, Shapr3D) and open-source
+Rust CAD research (Fornjot, truck, opencascade-rs, KittyCAD solver
+experiments). Items are grouped by subsystem, priority-ranked (P0 = blocks
+daily use, P1 = expected by any professional user, P2 = competitive parity,
+P3 = differentiators), and ordered into implementation waves.
+
+Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day ·
+`(M)` medium 2–5 days · `(L)` large > 1 week.
+
+---
+
+## Wave 1 — Production hygiene & core parametric features (current sprint)
+
+- [x] **T-01 CI pipeline** `(S)` `P0`
+      GitHub Actions: `cargo fmt --check`, `cargo clippy --workspace -- -D
+      warnings`, `cargo test --workspace`, cached builds, on every push/PR.
+      *Done: `.github/workflows/ci.yml`.*
+
+- [x] **F-01 Mirror feature** `(S)` `P0`
+      Reflect a body across a datum plane (point + normal); winding order
+      corrected for the handedness flip; Join/Cut/New operations.
+      *Done: `Feature::Mirror` + `TriMesh::mirrored` + tests (volume
+      symmetry, orientation preserved).*
+
+- [x] **F-02 Linear pattern feature** `(M)` `P0`
+      N instances of a seed body along a 3D direction with spacing,
+      optional symmetric distribution; instances combined by union or
+      cut/joined against a target (SolidWorks-equivalent semantics).
+      *Done: `Feature::LinearPattern` + tests (volume scales with count,
+      cut semantics verified).*
+
+- [x] **F-03 Circular pattern feature** `(M)` `P0`
+      N instances rotated about an arbitrary axis (point + direction) over
+      an angle span, equal or custom angular pitch.
+      *Done: `Feature::CircularPattern` + tests (6 instances at 60°,
+      axis off-origin).*
+
+- [x] **S-01 Slot sketch macro** `(S)` `P1`
+      Straight slot: two arc endpoints + two tangent line sides as
+      constrained entities (exactly how Onshape/Fusion implement the slot
+      tool). Center-to-center distance and radius remain parametric.
+      *Done: `Sketch::add_slot` + tangency/parallel/coincidence constraints
+      + chain test.*
+
+- [x] **S-02 Regular polygon sketch macro** `(S)` `P1`
+      N-sided polygon (3–64) from center + circumscribed radius, as line
+      entities with equal-length sides and angle constraints.
+      *Done: `Sketch::add_polygon` + tests (area ≈ ½·n·r²·sin(2π/n)).*
+
+## Wave 2 — Sketch depth & modeling completeness
+
+- [ ] **S-03 Ellipse entity (native)** `(M)` `P1`
+      Center-ellipse with semi-axes + tilt: solver DOFs `[cx, cy, rx, ry,
+      θ]`, ellipse-arc variant, contour sampling, point-on-ellipse
+      constraint. Requires solver packing extension.
+- [ ] **S-04 Remaining sketch constraints** `(S)` `P1`
+      Symmetric (about line/point), midpoint-on, point-on-curve (arc/
+      spline/ellipse), equal-radius already ok → add "equal length"
+      pairwise, tangent-arc-arc at point.
+- [ ] **S-05 Sketch diagnostics UI** `(S)` `P1`
+      Live DOF readout ("3 DOF remaining"), over-constrained /
+      conflicting-constraint highlighting in tree + viewport badges.
+- [ ] **S-06 Offset entities** `(M)` `P2`
+      Offset a contour chain by distance (creates new constrained
+      geometry, handles chain-corner intersections).
+- [ ] **S-07 Trim / extend** `(M)` `P2`
+      Trim-to-intersection on line/arc chains; extend to head.
+- [ ] **S-08 Sketch mirror tool** `(S)` `P2`
+      Mirror selected entities about a line, creating symmetric constraints.
+- [ ] **F-04 Hole feature (compound)** `(M)` `P1`
+      Standard holes: simple / counterbore / countersink, diameter, depth,
+      drill-point angle, placed at sketch points; evaluated as boolean cut
+      stack on cylinders/cones.
+- [ ] **F-05 Shell / hollow** `(L)` `P2` — needs face-level selection (see
+      W-04) or a B-Rep kernel; documented in `forge-geometry/src/detail.rs`.
+- [ ] **F-06 Draft / taper on extrude** `(M)` `P2`
+      Extrude with per-side slope (loft trick: section pair, one offset-
+      scaled). Reuses loft path.
+- [ ] **F-07 Thin-wall / rib extrude mode** `(M)` `P2`
+      Offset open profiles by thickness and cap ends (sheet-metal basics).
+- [ ] **P-01 User parameter table + expressions** `(M)` `P1`
+      Named parameters (mm/deg), expression evaluator (`width = 2*th + 1`),
+      dimensions reference parameters; UI table; document serialization.
+      Foundation for all later parametric depth.
+- [ ] **D-01 Datum planes & axes beyond the three datums** `(S)` `P1`
+      Offset-from-face, at-angle, through-edge/through-two-points planes;
+      selectable as sketch carriers and mirror/pattern references.
+
+## Wave 3 — Viewport interaction & rendering parity
+
+- [ ] **W-01 3D drag manipulator (gizmo)** `(M)` `P0`
+      Translate/rotate screen-space handles with axis picking, drag plane
+      raycast, snapping (1 mm / 5°), replacing inspector sliders for
+      transforms. Selected-body + feature-instance drag.
+- [ ] **W-02 Section view (clipping)** `(S)` `P1`
+      Arbitrary clipping plane per viewport: GPU-side clip distance in WGSL
+      + cap-plane rendering (stencil technique) or exposed cutaway
+      (simplest: clip only). Toolbar toggle + plane manipulator.
+- [ ] **W-03 Depth-peeled transparency** `(M)` `P1`
+      Dual depth peeling (8–16 layers) replacing sorted blending; correct
+      interpenetrating transparent geometry (documented in render TODO).
+- [ ] **W-04 Face/edge/vertex selection model** `(M)` `P1`
+      Picking granularity beyond bodies: ray→BVH→triangle → face cluster
+      (coplanar/normal-threshold flood), edge chains (sharp edge sets),
+      vertex snap. Prerequisite for fillet/chamfer/shell/draft UI.
+- [ ] **W-05 Display modes** `(S)` `P2`
+      Wireframe / hidden-line (depth-precision lines) / shaded / shaded+
+      edges / x-ray (opacity slider) / section — viewport toolbar presets.
+- [ ] **W-06 Ambient occlusion (SSAO/GTAO)** `(M)` `P3`
+      Half-res depth+normal GTAO pass, bilateral upsample; brings parity
+      with Fusion/Onshape viewport quality.
+- [ ] **W-07 Materials & studio lighting** `(M)` `P3`
+      PBR material editor (metal/rough workflow), env-map (split-sum or
+      prefiltered), 3-point studio presets, scene background options.
+- [ ] **W-08 Measurement tool** `(S)` `P2`
+      Two-pick measure (point-point, edge-edge, face-face distances,
+      angles) with persistent viewport labels.
+- [ ] **W-09 Infinite ground + shadows** `(S)` `P3`
+      Shadow-only ground plane (shadow-mapped), grid fade, horizon.
+
+## Wave 4 — Interoperability
+
+- [ ] **I-01 STL/OBJ import as mesh bodies** `(S)` `P1`
+      Import → weld → normal-consistency repair → mesh body feature;
+      enables boolean workflow on imported meshes. (Export already done.)
+- [ ] **I-02 3MF export/import** `(M)` `P2`
+      ZIP container + XML mesh (with units + optional color), production
+      3D-print format; import for mesh bodies.
+- [ ] **I-03 STEP AP242 export** `(L→Phase 6)` `P1`
+      Via `opencascade-rs` optional feature: tessellated→B-Rep (sewn
+      shells) → STEP; exact-geometry path when Wave 6 kernel lands.
+      The `StepExchange` trait already defines the seam.
+- [ ] **I-04 DXF/DWG sketch import** `(M)` `P2`
+      2D sketch exchange (ezdxf-rs or hand-rolled DXF subset), profiles
+      become constrained entities.
+- [ ] **I-05 glTF import + USD glTF-level parity** `(M)` `P3`
+- [ ] **I-06 Native format versioning/migration** `(S)` `P2`
+      RON schema version field + migration tests (forward one version).
+
+## Wave 5 — Assembly & drawing subsystems
+
+- [ ] **A-01 Multi-body part documents** `(M)` `P1`
+      Bodies list (independent solids per document with per-body
+      visibility/material/name); foundation for assemblies and patterns
+      producing multiple bodies.
+- [ ] **A-02 Assembly documents + occurrences** `(L)` `P2`
+      Instance graphs referencing part documents, rigid transforms per
+      occurrence, per-occurrence override color/suppress.
+- [ ] **A-03 Standard mates** `(L)` `P2`
+      Coincident/axis-align/distance-angle/planar contacts with solver
+      reuse (the 2D LM solver generalizes; 6-DOF per occurrence).
+- [ ] **A-04 Interference detection** `(M)` `P3`
+      Pairwise BSP intersection volume, report table.
+- [ ] **A-05 BOM generation** `(S)` `P3`
+      Auto table (part name, qty, custom columns) export CSV.
+- [ ] **DR-01 Drawing sheets** `(L)` `P3`
+      Orthographic projections (first/third angle), sections from W-02,
+      dimensioning, title blocks, PDF/SVG export.
+
+## Wave 6 — Geometry kernel maturity
+
+- [ ] **K-01 Robust CSG tolerancing** `(L)` `P1`
+      BSP epsilon policy (per-predicate tolerances), near-degenerate plane
+      classification fallbacks, fuzz corpus (random primitive soup,
+      property-test in CI).
+- [ ] **K-02 T-junction healing on booleans** `(M)` `P2`
+      Post-boolean edge matching: insert T-vertices to restore exact
+      watertight topology (currently volume-exact, topologically open).
+- [ ] **K-03 Fillet/chamfer (mesh approximate)** `(M)` `P2`
+      Edge-chain discovery (dihedral threshold) → rolling-ball surface
+      replacement on the triangle mesh; exact fillets deferred to K-06.
+- [ ] **K-04 Incremental tessellation cache** `(M)` `P2`
+      Per-feature mesh caching with invalidation only on param change
+      (already fingerprinted) + LOD per zoom; keeps 10k-feature docs at
+      60 fps.
+- [ ] **K-05 Frustum culling + draw batching** `(S)` `P2`
+      Per-body AABB culling on CPU; instance-buffer rendering for patterns.
+- [ ] **K-06 B-Rep kernel integration (truck)** `(L→Phase 4)` `P1`
+      Exact-geometry fillet/chamfer/shell/offset on B-Rep with mesh output
+      for rendering; feature tree maps 1:1 to kernel operations. The
+      `detail.rs` stubs define the API.
+- [ ] **K-07 NURBS curves/surfaces in sketches & lofts** `(M)` `P2`
+      Weighted control points, knot editing, G1/G2 loft continuity.
+
+## Wave 7 — Production hardening
+
+- [ ] **PR-01 Crash reporter + telemetry opt-in** `(S)` `P2`
+      Panic hook → local report file with document snapshot; opt-in
+      anonymous usage stats.
+- [ ] **PR-02 Plugin/scripting API** `(L)` `P3`
+      Rust-ABI stable trait surface + Rhai or WASM scripting for user
+      commands (Onshape FeatureScript equivalent).
+- [ ] **PR-03 Packaging & auto-update** `(M)` `P2`
+      GitHub Release artifacts (Windows MSI, macOS DMG, Linux AppImage),
+      signed, with delta updates.
+- [ ] **PR-04 i18n + HiDPI + accessibility** `(M)` `P3`
+      fluent-rs catalogs, scale-aware egui, keyboard-only modeling.
+- [ ] **PR-05 Performance dashboard** `(S)` `P2`
+      Frame-time, eval-time, memory stats in status bar (debug builds) +
+      regression benchmark in CI (criterion).
+- [ ] **PR-06 User docs** `(M)` `P2`
+      mdBook guide: quickstart, every tool, troubleshooting; in-app help
+      (F1) reusing the same source.
+- [ ] **PR-07 Fuzz + property CI job** `(S)` `P2`
+      cargo-fuzz on RON parser, boolean corpus, solver random sketches.
+
+---
+
+## Definition of "world-class, production-ready" (checklist)
+
+1. Every feature above P0/P1 closed, or explicitly roadmap-gated with a
+   documented stub (no silent gaps).
+2. CI green on three platforms (Linux/Windows/macOS) with clippy `-D
+   warnings` and fuzz corpus.
+3. Performance budget: < 16 ms frame at 1 M triangles; < 200 ms full
+   re-eval of a 200-feature document; autosave never blocks > 50 ms.
+4. Interop round-trips: STEP AP242 out, STL/OBJ/3MF in/out, native format
+   versioned.
+5. Crash-safe: any panic recoverable to last autosave (already true) +
+   crash reporter (PR-01).
+6. Docs shipped; every UI control reachable by keyboard.

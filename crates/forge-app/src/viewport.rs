@@ -55,7 +55,12 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         };
         let vp = info.clip_rect_in_pixels();
         if vp.width_px > 0 && vp.height_px > 0 {
-            render_pass.set_scissor_rect(vp.left_px.max(0) as u32, vp.top_px.max(0) as u32, vp.width_px.max(0) as u32, vp.height_px.max(0) as u32);
+            render_pass.set_scissor_rect(
+                vp.left_px.max(0) as u32,
+                vp.top_px.max(0) as u32,
+                vp.width_px.max(0) as u32,
+                vp.height_px.max(0) as u32,
+            );
         }
         renderer.composite(render_pass);
     }
@@ -83,7 +88,8 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
     if (middle && shift) || (left && alt && shift) {
         // Pan: convert point-space delta to world units.
         let scale = 2.0 / rect.height() as f64;
-        app.camera.pan(-drag.x as f64 * scale, drag.y as f64 * scale);
+        app.camera
+            .pan(-drag.x as f64 * scale, drag.y as f64 * scale);
     }
     if response.hovered() {
         // Zoom via wheel events (egui 0.36 reports wheel input as events).
@@ -205,12 +211,12 @@ fn navigation_cube(ui: &mut egui::Ui, camera: &mut Camera, viewport: egui::Rect)
     let mut order: Vec<usize> = (0..6).collect();
     order.sort_by_key(|qi| {
         let (a, b, c, d) = quads[*qi];
-        let cx = (cube_corners[a].0 + cube_corners[b].0 + cube_corners[c].0 + cube_corners[d].0)
-            * 0.25;
-        let cy = (cube_corners[a].1 + cube_corners[b].1 + cube_corners[c].1 + cube_corners[d].1)
-            * 0.25;
-        let cz = (cube_corners[a].2 + cube_corners[b].2 + cube_corners[c].2 + cube_corners[d].2)
-            * 0.25;
+        let cx =
+            (cube_corners[a].0 + cube_corners[b].0 + cube_corners[c].0 + cube_corners[d].0) * 0.25;
+        let cy =
+            (cube_corners[a].1 + cube_corners[b].1 + cube_corners[c].1 + cube_corners[d].1) * 0.25;
+        let cz =
+            (cube_corners[a].2 + cube_corners[b].2 + cube_corners[c].2 + cube_corners[d].2) * 0.25;
         let vz = cx * forward.x + cy * forward.y + cz * forward.z;
         (vz * 1000.0) as i64
     });
@@ -227,15 +233,15 @@ fn navigation_cube(ui: &mut egui::Ui, camera: &mut Camera, viewport: egui::Rect)
             .iter()
             .find(|(_, n, _, _)| {
                 let (a, b, c, d) = quads[qi];
-                let cx = (cube_corners[a].0 + cube_corners[b].0 + cube_corners[c].0
-                    + cube_corners[d].0)
-                    * 0.25;
-                let cy = (cube_corners[a].1 + cube_corners[b].1 + cube_corners[c].1
-                    + cube_corners[d].1)
-                    * 0.25;
-                let cz = (cube_corners[a].2 + cube_corners[b].2 + cube_corners[c].2
-                    + cube_corners[d].2)
-                    * 0.25;
+                let cx =
+                    (cube_corners[a].0 + cube_corners[b].0 + cube_corners[c].0 + cube_corners[d].0)
+                        * 0.25;
+                let cy =
+                    (cube_corners[a].1 + cube_corners[b].1 + cube_corners[c].1 + cube_corners[d].1)
+                        * 0.25;
+                let cz =
+                    (cube_corners[a].2 + cube_corners[b].2 + cube_corners[c].2 + cube_corners[d].2)
+                        * 0.25;
                 (cx - n[0]).abs() < 0.1 && (cy - n[1]).abs() < 0.1 && (cz - n[2]).abs() < 0.1
             })
             .map(|(label, _, yaw, pitch)| (*label, *yaw, *pitch));
@@ -252,11 +258,10 @@ fn navigation_cube(ui: &mut egui::Ui, camera: &mut Camera, viewport: egui::Rect)
         ));
         if let Some((label, _, _)) = face {
             let centroid = {
-                let sum = pts.iter().fold(egui::Vec2::ZERO, |acc, p| acc + p.to_vec2());
-                egui::pos2(
-                    sum.x / pts.len() as f32,
-                    sum.y / pts.len() as f32,
-                )
+                let sum = pts
+                    .iter()
+                    .fold(egui::Vec2::ZERO, |acc, p| acc + p.to_vec2());
+                egui::pos2(sum.x / pts.len() as f32, sum.y / pts.len() as f32)
             };
             painter.text(
                 centroid,

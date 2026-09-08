@@ -50,7 +50,10 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
         let _ = prim;
         let _ = response;
 
-        if ui.add(egui::Button::new("＋ Sketch Rect").small()).clicked() {
+        if ui
+            .add(egui::Button::new("＋ Sketch Rect").small())
+            .clicked()
+        {
             PaletteAction::NewSketchXY.run(app);
         }
         if ui.add(egui::Button::new("Extrude ▲").small()).clicked() {
@@ -68,7 +71,11 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
         } else {
             "Persp"
         };
-        if ui.button(proj_label).on_hover_text("Projection (P)").clicked() {
+        if ui
+            .button(proj_label)
+            .on_hover_text("Projection (P)")
+            .clicked()
+        {
             PaletteAction::ToggleProjection.run(app);
         }
         if ui
@@ -79,14 +86,22 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
             PaletteAction::FitView.run(app);
         }
         if ui
-            .button(if app.render_options.show_grid { "Grid ✓" } else { "Grid" })
+            .button(if app.render_options.show_grid {
+                "Grid ✓"
+            } else {
+                "Grid"
+            })
             .on_hover_text("Ground grid (G)")
             .clicked()
         {
             PaletteAction::ToggleGrid.run(app);
         }
         if ui
-            .button(if app.render_options.show_edges { "Edges ✓" } else { "Edges" })
+            .button(if app.render_options.show_edges {
+                "Edges ✓"
+            } else {
+                "Edges"
+            })
             .on_hover_text("Feature edges (E)")
             .clicked()
         {
@@ -95,7 +110,11 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
 
         ui.separator();
 
-        if ui.button("Save").on_hover_text("Save .forgecad (Ctrl+S)").clicked() {
+        if ui
+            .button("Save")
+            .on_hover_text("Save .forgecad (Ctrl+S)")
+            .clicked()
+        {
             PaletteAction::SaveNative.run(app);
         }
         let export = ui.menu_button("Export", |ui| {
@@ -129,14 +148,18 @@ pub fn tree_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
         let order: Vec<forge_core::FeatureId> = app.doc.tree.order().to_vec();
         if order.is_empty() {
             ui.label(
-                egui::RichText::new("No features yet.\nUse the palette (Ctrl+Shift+P)\nto add solids and sketches.")
-                    .weak(),
+                egui::RichText::new(
+                    "No features yet.\nUse the palette (Ctrl+Shift+P)\nto add solids and sketches.",
+                )
+                .weak(),
             );
             return;
         }
 
         for id in order {
-            let Some(node) = app.doc.tree.get(id).cloned() else { continue };
+            let Some(node) = app.doc.tree.get(id).cloned() else {
+                continue;
+            };
             let label = node.feature.label();
             let selected = app.selection.primary_feature() == Some(id);
             let has_error = app
@@ -154,6 +177,9 @@ pub fn tree_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 Feature::Primitive(_) => "◧",
                 Feature::Boolean(_) => "⊕",
                 Feature::TransformBody { .. } => "✥",
+                Feature::LinearPattern(_) => "⋮",
+                Feature::CircularPattern(_) => "◍",
+                Feature::Mirror(_) => "⇄",
             };
 
             let mut title = format!("{icon} {label}");
@@ -166,15 +192,8 @@ pub fn tree_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
 
             ui.horizontal(|ui| {
                 let text = egui::RichText::new(title);
-                let text = if selected {
-                    text.strong()
-                } else {
-                    text
-                };
-                if ui
-                    .selectable_label(selected, text)
-                    .clicked()
-                {
+                let text = if selected { text.strong() } else { text };
+                if ui.selectable_label(selected, text).clicked() {
                     app.selection.select(forge_model::SelectionItem::Body(
                         forge_core::BodyId::new(id.raw()),
                     ));
@@ -266,9 +285,8 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
             app.request_evaluation();
         }
     }
-    let edit = |app: &mut ForgeApp, new_feature: Feature| {
-        edit_feature(app, id, &feature, new_feature)
-    };
+    let edit =
+        |app: &mut ForgeApp, new_feature: Feature| edit_feature(app, id, &feature, new_feature);
 
     match &feature {
         Feature::Primitive(p) => {
@@ -310,9 +328,7 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
             // Live preview: dragging the slider re-evaluates the model
             // (FR-UI-03).
             let mut distance = p.distance;
-            ui.add(
-                egui::Slider::new(&mut distance, 0.1..=200.0).text("distance (mm)"),
-            );
+            ui.add(egui::Slider::new(&mut distance, 0.1..=200.0).text("distance (mm)"));
             if distance != p.distance {
                 let mut newp = p.clone();
                 newp.distance = distance;
@@ -331,9 +347,7 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
         }
         Feature::Revolve(p) => {
             let mut angle = p.angle.to_degrees();
-            ui.add(
-                egui::Slider::new(&mut angle, 1.0..=360.0).text("angle (deg)"),
-            );
+            ui.add(egui::Slider::new(&mut angle, 1.0..=360.0).text("angle (deg)"));
             let new_angle = angle.to_radians();
             if (new_angle - p.angle).abs() > 1e-9 {
                 let mut newp = p.clone();
@@ -366,7 +380,11 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
             ui.label(format!("Operation: {}", b.op));
             ui.label(format!("Operands: {} bodies", b.operands.len()));
         }
-        Feature::TransformBody { source, translation, rotation } => {
+        Feature::TransformBody {
+            source,
+            translation,
+            rotation,
+        } => {
             let mut t = *translation;
             ui.add(egui::Slider::new(&mut t.x, -200.0..=200.0).text("translate X"));
             ui.add(egui::Slider::new(&mut t.y, -200.0..=200.0).text("translate Y"));
@@ -383,6 +401,87 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
                         rotation: *rotation,
                     },
                 );
+            }
+        }
+        Feature::LinearPattern(p) => {
+            let mut count = p.count as i32;
+            let mut spacing = p.spacing;
+            let mut symmetric = p.symmetric;
+            egui::Grid::new("linpat").num_columns(2).show(ui, |ui| {
+                ui.label("Count");
+                ui.add(egui::DragValue::new(&mut count).range(2..=200));
+                ui.end_row();
+                ui.label("Spacing");
+                ui.add(
+                    egui::DragValue::new(&mut spacing)
+                        .speed(0.5)
+                        .range(0.1..=500.0),
+                );
+                ui.end_row();
+            });
+            ui.checkbox(&mut symmetric, "Symmetric about the seed");
+            ui.label(format!(
+                "Direction: ({:.2}, {:.2}, {:.2})  |  Operation: {}",
+                p.direction.x, p.direction.y, p.direction.z, p.operation
+            ));
+            if count != p.count as i32
+                || (spacing - p.spacing).abs() > 1e-9
+                || symmetric != p.symmetric
+            {
+                let mut newp = p.clone();
+                newp.count = count.max(2) as usize;
+                newp.spacing = spacing;
+                newp.symmetric = symmetric;
+                edit(app, Feature::LinearPattern(newp));
+            }
+        }
+        Feature::CircularPattern(p) => {
+            let mut count = p.count as i32;
+            let mut angle = p.angle.to_degrees();
+            egui::Grid::new("circpat").num_columns(2).show(ui, |ui| {
+                ui.label("Count");
+                ui.add(egui::DragValue::new(&mut count).range(2..=200));
+                ui.end_row();
+                ui.label("Span");
+                ui.add(
+                    egui::DragValue::new(&mut angle)
+                        .speed(1.0)
+                        .range(1.0..=360.0)
+                        .suffix("\u{00b0}"),
+                );
+                ui.end_row();
+            });
+            ui.label(format!(
+                "Axis: ({:.2}, {:.2}, {:.2}) through ({:.1}, {:.1}, {:.1})  |  Operation: {}",
+                p.axis_dir.x,
+                p.axis_dir.y,
+                p.axis_dir.z,
+                p.axis_point.x,
+                p.axis_point.y,
+                p.axis_point.z,
+                p.operation
+            ));
+            let new_angle = angle.to_radians();
+            if count != p.count as i32 || (new_angle - p.angle).abs() > 1e-9 {
+                let mut newp = p.clone();
+                newp.count = count.max(2) as usize;
+                newp.angle = new_angle;
+                edit(app, Feature::CircularPattern(newp));
+            }
+        }
+        Feature::Mirror(p) => {
+            let mut plane_x = p.plane_point.x;
+            ui.add(
+                egui::Slider::new(&mut plane_x, -200.0..=200.0).text("mirror plane X (YZ offset)"),
+            );
+            ui.label(format!(
+                "Plane normal: ({:.2}, {:.2}, {:.2})  |  Operation: {}",
+                p.plane_normal.x, p.plane_normal.y, p.plane_normal.z, p.operation
+            ));
+            if (plane_x - p.plane_point.x).abs() > 1e-9 {
+                let mut newp = p.clone();
+                newp.plane_point.x = plane_x;
+                edit(app, Feature::Mirror(newp));
             }
         }
         _ => {
@@ -439,8 +538,7 @@ pub fn palette_overlay(ctx: &egui::Context, app: &mut ForgeApp) {
                 .into_iter()
                 .enumerate()
                 .filter_map(|(i, e)| {
-                    fuzzy_score(&query, e.label, e.keywords)
-                        .map(|s| (s, i, e.label, e.action))
+                    fuzzy_score(&query, e.label, e.keywords).map(|s| (s, i, e.label, e.action))
                 })
                 .collect();
             scored.sort_by_key(|(s, i, _, _)| *s * 1000 + *i);
@@ -451,7 +549,8 @@ pub fn palette_overlay(ctx: &egui::Context, app: &mut ForgeApp) {
                 for (rank, idx, label, action) in scored.iter().take(12) {
                     let selected = *idx == 0 && query.is_empty();
                     let _ = selected;
-                    let response = ui.selectable_label(false, format!("{:>4}  {label}", (*rank).min(999)));
+                    let response =
+                        ui.selectable_label(false, format!("{:>4}  {label}", (*rank).min(999)));
                     if response.clicked() {
                         run_idx = Some(*action);
                     }

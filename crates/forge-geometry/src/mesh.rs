@@ -71,7 +71,11 @@ impl TriMesh {
     /// Triangle corner positions `[a, b, c]`.
     pub fn triangle(&self, i: usize) -> [Point3; 3] {
         let [a, b, c] = self.triangle_idx(i);
-        [self.positions[a as usize], self.positions[b as usize], self.positions[c as usize]]
+        [
+            self.positions[a as usize],
+            self.positions[b as usize],
+            self.positions[c as usize],
+        ]
     }
 
     /// Iterate over all triangles as position triples.
@@ -105,7 +109,9 @@ impl TriMesh {
         let mut acc = vec![Vector3::zeros(); self.positions.len()];
 
         // Parallel: triangle normals + corner angles.
-        let tri_data: Vec<([u32; 3], Option<(Vector3, [f64; 3])>)> = (0..tri_count)
+        // (Per-triangle indices + weighted corner contributions.)
+        type TriAcc = ([u32; 3], Option<(Vector3, [f64; 3])>);
+        let tri_data: Vec<TriAcc> = (0..tri_count)
             .into_par_iter()
             .map(|i| {
                 let idx = self.triangle_idx(i);
@@ -186,6 +192,32 @@ impl TriMesh {
         }
     }
 
+    /// Mirror (reflect) a copy of the mesh across the plane through `point`
+    /// with unit `normal`.
+    ///
+    /// A reflection has determinant −1, so the triangle winding order is
+    /// reversed to keep the outward orientation (and therefore a positive
+    /// signed volume). Normals are recomputed after the flip.
+    pub fn mirrored(&self, point: &Point3, normal: &Vector3) -> Self {
+        let n = normal.normalize();
+        let reflect = |p: &Point3| -> Point3 {
+            let d = p - point;
+            *p - (d.dot(&n) * 2.0) * n
+        };
+        let mut out = Self {
+            positions: self.positions.iter().map(reflect).collect(),
+            indices: self.indices.clone(),
+            normals: None,
+        };
+        // Handedness flip: reverse every triangle's winding.
+        for t in 0..out.tri_count() {
+            let k = t * 3;
+            out.indices.swap(k + 1, k + 2);
+        }
+        out.compute_vertex_normals();
+        out
+    }
+
     /// Merge `other` into `self`, offsetting indices.
     pub fn merge(&mut self, other: &TriMesh) {
         let offset = self.positions.len() as u32;
@@ -207,7 +239,9 @@ impl TriMesh {
             }
         }
         directed.values().all(|c| *c == 1)
-            && directed.keys().all(|(a, b)| directed.contains_key(&(*b, *a)))
+            && directed
+                .keys()
+                .all(|(a, b)| directed.contains_key(&(*b, *a)))
     }
 
     /// Signed volume via the divergence theorem. Returns `None` if the mesh
@@ -235,7 +269,9 @@ impl TriMesh {
 
     /// Surface area.
     pub fn area(&self) -> f64 {
-        self.triangles().map(|[a, b, c]| (b - a).cross(&(c - a)).norm() * 0.5).sum()
+        self.triangles()
+            .map(|[a, b, c]| (b - a).cross(&(c - a)).norm() * 0.5)
+            .sum()
     }
 
     /// Centroid of the vertex cloud (not the volumetric centroid; good
@@ -362,8 +398,8 @@ impl TriMesh {
             .map(|i| self.triangle_normal_raw(i).norm() * 0.5 > eps_area)
             .collect();
         let mut new_indices = Vec::with_capacity(self.indices.len());
-        for t in 0..self.tri_count() {
-            if keep[t] {
+        for (t, keep_t) in keep.iter().enumerate() {
+            if *keep_t {
                 let k = t * 3;
                 new_indices.extend_from_slice(&self.indices[k..k + 3]);
             }

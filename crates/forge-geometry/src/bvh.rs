@@ -42,11 +42,7 @@ pub struct RayHit {
 impl Bvh {
     /// Build a BVH for `tri_count` triangles given per-triangle bounding
     /// boxes and centroids.
-    pub fn from_tri_boxes(
-        tri_boxes: Vec<BBox3>,
-        centroids: Vec<Point3>,
-        tri_count: usize,
-    ) -> Self {
+    pub fn from_tri_boxes(tri_boxes: Vec<BBox3>, centroids: Vec<Point3>, tri_count: usize) -> Self {
         debug_assert_eq!(tri_boxes.len(), tri_count);
         debug_assert_eq!(centroids.len(), tri_count);
         let mut tris: Vec<u32> = (0..tri_count as u32).collect();
@@ -56,10 +52,7 @@ impl Bvh {
     }
 
     /// Build a BVH for a triangle soup (positions + flat indices).
-    pub fn from_mesh_positions(
-        positions: &[Point3],
-        indices: &[u32],
-    ) -> Self {
+    pub fn from_mesh_positions(positions: &[Point3], indices: &[u32]) -> Self {
         let tri_count = indices.len() / 3;
         let mut boxes = Vec::with_capacity(tri_count);
         let mut centroids = Vec::with_capacity(tri_count);
@@ -224,16 +217,10 @@ mod tests {
 
     #[test]
     fn raycast_hits_box_face() {
-        let mesh = primitives::box_from_center_extents(
-            Point3::origin(),
-            Vector3::new(10.0, 10.0, 10.0),
-        );
+        let mesh =
+            primitives::box_from_center_extents(Point3::origin(), Vector3::new(10.0, 10.0, 10.0));
         let bvh = Bvh::from_mesh_positions(&mesh.positions, &mesh.indices);
-        let ray = Ray3::new(
-            Point3::new(0.0, 0.0, 20.0),
-            Vector3::new(0.0, 0.0, -1.0),
-        )
-        .unwrap();
+        let ray = Ray3::new(Point3::new(0.0, 0.0, 20.0), Vector3::new(0.0, 0.0, -1.0)).unwrap();
         let hit = bvh.ray_cast(&mesh.positions, &mesh.indices, &ray, 1000.0);
         let hit = hit.expect("ray must hit the box");
         assert!((hit.t - 15.0).abs() < 1e-9);
@@ -247,16 +234,12 @@ mod tests {
 
     #[test]
     fn raycast_miss() {
-        let mesh = primitives::box_from_center_extents(
-            Point3::origin(),
-            Vector3::new(10.0, 10.0, 10.0),
-        );
+        let mesh =
+            primitives::box_from_center_extents(Point3::origin(), Vector3::new(10.0, 10.0, 10.0));
         let bvh = Bvh::from_mesh_positions(&mesh.positions, &mesh.indices);
-        let ray = Ray3::new(
-            Point3::new(50.0, 50.0, 50.0),
-            Vector3::new(0.0, 0.0, -1.0),
-        )
-        .unwrap();
-        assert!(bvh.ray_cast(&mesh.positions, &mesh.indices, &ray, 1000.0).is_none());
+        let ray = Ray3::new(Point3::new(50.0, 50.0, 50.0), Vector3::new(0.0, 0.0, -1.0)).unwrap();
+        assert!(bvh
+            .ray_cast(&mesh.positions, &mesh.indices, &ray, 1000.0)
+            .is_none());
     }
 }

@@ -163,12 +163,7 @@ impl BBox3 {
         let mut tmin = f64::MIN;
         let mut tmax = f64::MAX;
         for i in 0..3 {
-            let (o, d, mn, mx) = (
-                ray.origin[i],
-                ray.direction[i],
-                self.min[i],
-                self.max[i],
-            );
+            let (o, d, mn, mx) = (ray.origin[i], ray.direction[i], self.min[i], self.max[i]);
             if d.abs() < 1e-12 {
                 if o < mn || o > mx {
                     return None;
@@ -202,7 +197,10 @@ pub struct Ray3 {
 impl Ray3 {
     /// Create a ray; returns `None` if `direction` cannot be normalized.
     pub fn new(origin: Point3, direction: Vector3) -> Option<Self> {
-        Unit::try_new(direction, 1e-12).map(|d| Self { origin, direction: d })
+        Unit::try_new(direction, 1e-12).map(|d| Self {
+            origin,
+            direction: d,
+        })
     }
 
     /// Point at distance `t` along the ray.
@@ -214,12 +212,7 @@ impl Ray3 {
 /// Intersection of a ray with a triangle (Möller–Trumbore), `f64` version.
 /// Returns the distance along the ray and the barycentric `(u, v)` of the
 /// hit point on the triangle.
-pub fn ray_triangle(
-    ray: &Ray3,
-    a: &Point3,
-    b: &Point3,
-    c: &Point3,
-) -> Option<(f64, f64, f64)> {
+pub fn ray_triangle(ray: &Ray3, a: &Point3, b: &Point3, c: &Point3) -> Option<(f64, f64, f64)> {
     let e1 = *b - *a;
     let e2 = *c - *a;
     let dir: Vector3 = *ray.direction.as_ref();
@@ -258,9 +251,8 @@ mod tests {
 
     #[test]
     fn plane_roundtrip_local_world() {
-        let plane =
-            Plane::new(Point3::new(1.0, 2.0, 3.0), Vector3::new(1.0, 1.0, 0.0))
-                .expect("non-degenerate");
+        let plane = Plane::new(Point3::new(1.0, 2.0, 3.0), Vector3::new(1.0, 1.0, 0.0))
+            .expect("non-degenerate");
         let p = Point3::new(4.0, 5.0, 6.0);
         // Roundtrip is exact for points on the plane; general points must be
         // projected first.
@@ -291,11 +283,11 @@ mod tests {
             min: Point3::new(-1.0, -1.0, -1.0),
             max: Point3::new(1.0, 1.0, 1.0),
         };
-        let ray = Ray3::new(Point3::new(-5.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0))
-            .expect("unit");
+        let ray =
+            Ray3::new(Point3::new(-5.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)).expect("unit");
         assert_abs_diff_eq!(bb.ray_cast(&ray).unwrap(), 4.0, epsilon = 1e-9);
-        let miss = Ray3::new(Point3::new(-5.0, 5.0, 0.0), Vector3::new(1.0, 0.0, 0.0))
-            .expect("unit");
+        let miss =
+            Ray3::new(Point3::new(-5.0, 5.0, 0.0), Vector3::new(1.0, 0.0, 0.0)).expect("unit");
         assert!(bb.ray_cast(&miss).is_none());
     }
 
@@ -304,12 +296,12 @@ mod tests {
         let a = Point3::origin();
         let b = Point3::new(1.0, 0.0, 0.0);
         let c = Point3::new(0.0, 1.0, 0.0);
-        let ray = Ray3::new(Point3::new(0.25, 0.25, 5.0), Vector3::new(0.0, 0.0, -1.0))
-            .expect("unit");
+        let ray =
+            Ray3::new(Point3::new(0.25, 0.25, 5.0), Vector3::new(0.0, 0.0, -1.0)).expect("unit");
         let (t, _u, _v) = ray_triangle(&ray, &a, &b, &c).expect("must hit");
         assert_abs_diff_eq!(t, 5.0, epsilon = 1e-12);
-        let miss = Ray3::new(Point3::new(2.0, 2.0, 5.0), Vector3::new(0.0, 0.0, -1.0))
-            .expect("unit");
+        let miss =
+            Ray3::new(Point3::new(2.0, 2.0, 5.0), Vector3::new(0.0, 0.0, -1.0)).expect("unit");
         assert!(ray_triangle(&miss, &a, &b, &c).is_none());
     }
 }

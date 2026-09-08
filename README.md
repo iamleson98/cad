@@ -5,17 +5,23 @@ A modern, high-performance desktop **3D CAD application in Rust**, rendering thr
 **egui** interface running directly on the GPU canvas.
 
 This repository is the **v0.1 milestone** of the phased roadmap in
-`docs/ForgeCAD-SRS-and-Architecture.pdf`: a complete, compiling, tested
-foundation covering the 2D parametric sketcher, the solid modeling kernel
-(extrude / revolve / loft / sweep / CSG booleans), the multi-pass WebGPU
-viewport, the undo/redo command stack, file I/O and the desktop shell.
+`TODO.md` (road to world-class gap analysis) and the original SRS: a
+complete, compiling, tested foundation covering the 2D parametric sketcher
+(rectangle / circle / arc / spline / **slot** / **regular polygon** macros),
+the solid modeling kernel (extrude / revolve / loft / sweep / CSG booleans /
+**linear & circular patterns** / **mirror**), the multi-pass WebGPU viewport,
+the undo/redo command stack, file I/O and the desktop shell.
 
 ## Quick start
 
 ```bash
 cargo run --release -p forge-app        # launches the forgecad desktop app
-cargo test --workspace                  # 70 unit/integration tests
+cargo test --workspace                  # 85 unit/integration tests
 ```
+
+CI (GitHub Actions, `.github/workflows/ci.yml`): `cargo fmt --check`,
+`cargo clippy -D warnings`, full test suite and cross-compile smoke builds
+(Windows MSVC, macOS aarch64) on every push.
 
 Linux requires the usual GUI stack (X11 or Wayland; `libxkbcommon`); macOS and
 Windows work out of the box. A Vulkan/Metal/D3D12-capable GPU or a software
@@ -43,8 +49,8 @@ fallback adapter (llvmpipe / lavapipe) is needed at runtime.
 
 ## Using the app
 
-- `Ctrl+Shift+P` – command palette (add solids, sketches, extrude, booleans,
-  view commands, exports).
+- `Ctrl+Shift+P` – command palette (add solids, sketches, slots, polygons,
+  extrude, booleans, **patterns / mirror**, view commands, exports).
 - Orbit: middle-drag (or `Alt`+left-drag) · Pan: `Shift`+middle · Zoom: wheel.
 - Click bodies to select (GPU picking); the inspector edits parameters with
   live preview.

@@ -4,7 +4,7 @@ use crate::background::{EvalRequest, EvalResponse, EvalWorker, ExportDone};
 use crate::palette::PaletteAction;
 use crate::ui;
 use crate::viewport;
-use forge_core::{BodyId, FeatureId, Point3};
+use forge_core::{BodyId, FeatureId};
 use forge_model::{Document, Evaluation, Selection, SelectionItem};
 use forge_render::{Camera, RenderOptions, Renderer, Scene, SceneBody};
 use forge_sketch::SolveReport;
@@ -196,7 +196,8 @@ impl ForgeApp {
         }
         self.scene.set_bodies(bodies);
         // Auto-fit on the first non-empty evaluation.
-        if self.last_evaluation
+        if self
+            .last_evaluation
             .as_ref()
             .map(|ev| !ev.bodies.is_empty())
             .unwrap_or(false)
@@ -212,11 +213,10 @@ impl ForgeApp {
         if !self.pick_requested {
             return;
         }
-        let Some(renderer) = self.renderer.clone() else { return };
-        let result = renderer
-            .lock()
-            .ok()
-            .and_then(|mut r| r.poll_pick());
+        let Some(renderer) = self.renderer.clone() else {
+            return;
+        };
+        let result = renderer.lock().ok().and_then(|mut r| r.poll_pick());
         let Some(result) = result else { return };
         self.pick_requested = false;
         match result.body {
@@ -259,10 +259,7 @@ impl ForgeApp {
     pub fn save_native_dialog(&mut self) {
         let path = self.doc_path.clone().unwrap_or_else(|| {
             let mut p = std::env::current_dir().unwrap_or_default();
-            let name = self
-                .doc
-                .name
-                .replace(char::is_whitespace, "_");
+            let name = self.doc.name.replace(char::is_whitespace, "_");
             p.push(format!("{name}.forgecad"));
             p
         });
@@ -315,7 +312,6 @@ impl ForgeApp {
             });
         });
     }
-
 }
 
 /// Where the autosave lives.
@@ -359,7 +355,9 @@ impl eframe::App for ForgeApp {
             if ctrl && !shift && i.key_pressed(egui::Key::Z) {
                 PaletteAction::Undo.run(self);
             }
-            if (ctrl && i.key_pressed(egui::Key::Y)) || (ctrl && shift && i.key_pressed(egui::Key::Z)) {
+            if (ctrl && i.key_pressed(egui::Key::Y))
+                || (ctrl && shift && i.key_pressed(egui::Key::Z))
+            {
                 PaletteAction::Redo.run(self);
             }
             if ctrl && i.key_pressed(egui::Key::S) {
@@ -389,7 +387,11 @@ impl eframe::App for ForgeApp {
             for (i, b) in ev.bodies.iter().enumerate() {
                 if let Some(body) = self.scene.bodies.get_mut(i) {
                     let is_sel = selected.iter().any(|s| s.raw() == b.id.raw());
-                    let want = if is_sel { Scene::SELECTED } else { Scene::DEFAULT };
+                    let want = if is_sel {
+                        Scene::SELECTED
+                    } else {
+                        Scene::DEFAULT
+                    };
                     if body.style.color != want {
                         body.style.color = want;
                         self.scene.version += 1;
@@ -399,11 +401,9 @@ impl eframe::App for ForgeApp {
         }
 
         // Layout.
-        egui::Panel::top("toolbar")
-            .resizable(false)
-            .show(ui, |ui| {
-                ui::toolbar(ui, self);
-            });
+        egui::Panel::top("toolbar").resizable(false).show(ui, |ui| {
+            ui::toolbar(ui, self);
+        });
         egui::Panel::bottom("status")
             .resizable(false)
             .show(ui, |ui| {

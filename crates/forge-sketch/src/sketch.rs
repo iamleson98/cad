@@ -6,7 +6,7 @@ use crate::entity::SketchEntity;
 use crate::planes::SketchPlane;
 use crate::solver;
 use crate::{Result, SolveStatus};
-use forge_core::{EntityId, Point2, SketchId, TessellationConfig};
+use forge_core::{EntityId, Point2, SketchId, TessellationConfig, Vector2};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -119,7 +119,8 @@ impl Sketch {
     /// Add a spline through/over the control points.
     pub fn add_spline(&mut self, control: Vec<Point2>) -> EntityId {
         let id = self.next_id();
-        self.entities.insert(id, SketchEntity::Spline { id, control });
+        self.entities
+            .insert(id, SketchEntity::Spline { id, control });
         id
     }
 
@@ -161,6 +162,154 @@ impl Sketch {
         [bl, br, tr, tl]
     }
 
+    /// Add a straight slot (S-01): two semicircular arc ends joined by two
+    /// tangent sides, exactly how production sketchers implement the slot
+    /// tool. The entities are fully parametric: drag the endpoints, or
+    /// edit the center distance / radius constraints.
+    ///
+    /// Returns `[bottom_line, head_arc, top_line, tail_arc]` (in CCW
+    /// contour order from `p1` to `p2`).
+    pub fn add_slot(&mut self, p1: Point2, p2: Point2, radius: f64) -> Result<[EntityId; 4]> {
+        if radius <= 1e-12 || !radius.is_finite() {
+            return Err(crate::SketchError::Invalid(
+                "slot radius must be positive".into(),
+            ));
+        }
+        let d = p2 - p1;
+        if d.norm() < 1e-12 {
+            return Err(crate::SketchError::Invalid(
+                "slot endpoints must be distinct".into(),
+            ));
+        }
+        let d = d.normalize();
+        // Left-hand normal (90° CCW of the slot direction).
+        let n = Vector2::new(-d.y, d.x);
+        let theta_n = n.y.atan2(n.x);
+
+        // Arcs: tail spans [theta_n, theta_n + pi], head spans
+        // [theta_n + pi, theta_n + TAU] (both CCW, outer contour order).
+        let tail = self.add_arc(p1, radius, theta_n, theta_n + std::f64::consts::PI);
+        let head = self.add_arc(
+            p2,
+            radius,
+            theta_n + std::f64::consts::PI,
+            theta_n + std::f64::consts::TAU,
+        );
+        // Bottom side runs p1 - r*n -> p2 - r*n (with the contour).
+        let bottom = self.add_line(p1 - n * radius, p2 - n * radius);
+        // Top side runs back: p2 + r*n -> p1 + r*n.
+        let top = self.add_line(p2 + n * radius, p1 + n * radius);
+
+        // Close the contour: coincidences at all four joints.
+        let joins = [
+            (tail, PointRole::End, bottom, PointRole::Start),
+            (bottom, PointRole::End, head, PointRole::Start),
+            (head, PointRole::End, top, PointRole::Start),
+            (top, PointRole::End, tail, PointRole::Start),
+        ];
+        for (a, a_point, b, b_point) in joins {
+            self.constraints.push(Constraint::Coincident {
+                a,
+                a_point,
+                b,
+                b_point,
+            });
+        }
+        // Each side is tangent to both end arcs.
+        for line in [bottom, top] {
+            for arc in [tail, head] {
+                self.constraints.push(Constraint::TangentLineCircle {
+                    line,
+                    circle: arc,
+                    kind: crate::TangentKind::External,
+                });
+            }
+        }
+        // Same radius on both ends + the dimensional pair (length, radius).
+        self.constraints
+            .push(Constraint::EqualRadius { a: tail, b: head });
+        self.constraints.push(Constraint::Distance {
+            a: tail,
+            a_point: PointRole::Center,
+            b: head,
+            b_point: PointRole::Center,
+            value: (p2 - p1).norm(),
+        });
+        self.constraints.push(Constraint::Radius {
+            circle: tail,
+            value: radius,
+        });
+
+        Ok([bottom, head, top, tail])
+    }
+
+    /// Add a regular polygon (S-02) as `sides` line entities (3..=64)
+    /// inscribed in the circle around `center` with circumradius `radius`.
+    /// The first vertex sits at `start_angle`. Sides are constrained
+    /// equal-length with fixed turning angles: a rigid, fully parametric
+    /// polygon (free to translate/rotate like in production sketchers).
+    pub fn add_polygon(
+        &mut self,
+        center: Point2,
+        radius: f64,
+        sides: usize,
+        start_angle: f64,
+    ) -> Result<Vec<EntityId>> {
+        if !(3..=64).contains(&sides) {
+            return Err(crate::SketchError::Invalid(
+                "polygon needs 3..=64 sides".into(),
+            ));
+        }
+        if radius <= 1e-12 || !radius.is_finite() {
+            return Err(crate::SketchError::Invalid(
+                "polygon radius must be positive".into(),
+            ));
+        }
+        let vertex = |k: usize| -> Point2 {
+            let a = start_angle + std::f64::consts::TAU * k as f64 / sides as f64;
+            Point2::new(center.x + radius * a.cos(), center.y + radius * a.sin())
+        };
+        let mut lines = Vec::with_capacity(sides);
+        for k in 0..sides {
+            lines.push(self.add_line(vertex(k), vertex(k + 1)));
+        }
+        // Coincident closure.
+        for k in 0..sides {
+            let next = (k + 1) % sides;
+            self.constraints.push(Constraint::Coincident {
+                a: lines[k],
+                a_point: PointRole::End,
+                b: lines[next],
+                b_point: PointRole::Start,
+            });
+        }
+        // Equal side lengths + the side length dimension (pins the scale:
+        // without it the polygon can collapse to a point, which satisfies
+        // every relative constraint).
+        let side = 2.0 * radius * (std::f64::consts::PI / sides as f64).sin();
+        self.constraints.push(Constraint::Length {
+            line: lines[0],
+            value: side,
+        });
+        for k in 1..sides {
+            self.constraints.push(Constraint::EqualLength {
+                a: lines[0],
+                b: lines[k],
+            });
+        }
+        // Fixed turning angle between consecutive sides (exterior angle of
+        // a regular n-gon traversed CCW).
+        let exterior = std::f64::consts::TAU / sides as f64;
+        for k in 0..sides - 1 {
+            self.constraints.push(Constraint::Angle {
+                a: lines[k],
+                b: lines[k + 1],
+                value: exterior,
+            });
+        }
+        Ok(lines)
+    }
+
     /// Add a constraint; returns its index.
     pub fn add_constraint(&mut self, c: Constraint) -> usize {
         self.constraints.push(c);
@@ -179,9 +328,8 @@ impl Sketch {
     /// Remove an entity and all constraints referencing it.
     pub fn remove_entity(&mut self, id: EntityId) {
         self.entities.remove(&id);
-        self.constraints.retain(|c| {
-            !c.referenced_entities().iter().any(|e| *e == id)
-        });
+        self.constraints
+            .retain(|c| !c.referenced_entities().contains(&id));
     }
 
     /// Solve all constraints (FR-SK-02, real time).
@@ -203,9 +351,9 @@ impl Sketch {
     fn entity_polyline(&self, id: EntityId, cfg: &TessellationConfig) -> Option<Vec<Point2>> {
         match self.entities.get(&id)? {
             SketchEntity::Line { start, end, .. } => Some(vec![*start, *end]),
-            SketchEntity::Circle { center, radius, .. } => Some(
-                forge_geometry_lite_circle(*center, *radius, cfg),
-            ),
+            SketchEntity::Circle { center, radius, .. } => {
+                Some(forge_geometry_lite_circle(*center, *radius, cfg))
+            }
             SketchEntity::Arc {
                 center,
                 radius,
@@ -271,8 +419,7 @@ impl Sketch {
         //   C: p starts where pts starts -> merged = reversed(p) ++ pts[1..]
         //   B: p starts where pts ends   -> merged = pts ++ p[1..]
         //   D: p ends where pts ends     -> merged = pts ++ reversed(p)[1..]
-        while !segments.is_empty() {
-            let (_, _, mut pts) = segments.pop().expect("non-empty");
+        while let Some((_, _, mut pts)) = segments.pop() {
             let mut grew = true;
             while grew {
                 grew = false;
@@ -329,7 +476,11 @@ impl Sketch {
 }
 
 /// Circle discretization (dependency-free, shared with callers).
-fn forge_geometry_lite_circle(center: Point2, radius: f64, cfg: &TessellationConfig) -> Vec<Point2> {
+fn forge_geometry_lite_circle(
+    center: Point2,
+    radius: f64,
+    cfg: &TessellationConfig,
+) -> Vec<Point2> {
     let n = cfg.segments_for_circle(radius);
     (0..n)
         .map(|k| {
@@ -387,13 +538,23 @@ mod tests {
         s.add_constraint(Constraint::Distance {
             a: c,
             a_point: PointRole::Start,
-            b: b,
+            b,
             b_point: PointRole::Start,
             value: 50.0,
         });
         let report = s.solve().expect("solve");
-        assert!(report.is_solved(), "status {:?} residual {}", report.status, report.residual);
-        let pc = s.entities.get(&c).unwrap().point(&PointRole::Start).unwrap();
+        assert!(
+            report.is_solved(),
+            "status {:?} residual {}",
+            report.status,
+            report.residual
+        );
+        let pc = s
+            .entities
+            .get(&c)
+            .unwrap()
+            .point(&PointRole::Start)
+            .unwrap();
         // 30-40-50 triangle: C is at (x, y) with |CA| = 30, |CB| = 50.
         // x^2+y^2=900; (x-40)^2+y^2=2500 -> -80x+1600=1600 -> x=0? Let me
         // verify: (x-40)^2 - x^2 = 1600 -> -80x + 1600 = 1600 -> x = 0,
@@ -411,7 +572,10 @@ mod tests {
             *start = Point2::new(1.0, -1.0);
             *end = Point2::new(9.0, 1.0);
         }
-        s.add_constraint(Constraint::Length { line: bl, value: 10.0 });
+        s.add_constraint(Constraint::Length {
+            line: bl,
+            value: 10.0,
+        });
         let report = s.solve().expect("solve");
         assert!(report.is_solved(), "residual {}", report.residual);
         // The rectangle corners are restored (up to the free translation).
@@ -477,5 +641,214 @@ mod tests {
         let contours = s.profile_contours(&TessellationConfig::default());
         assert_eq!(contours.len(), 1);
         assert!(contours[0].len() >= 16);
+    }
+
+    #[test]
+    fn slot_forms_single_closed_contour() {
+        let mut s = Sketch::new(SketchId::new(1), "slot", plane());
+        s.add_slot(Point2::new(-10.0, 0.0), Point2::new(10.0, 0.0), 3.0)
+            .expect("slot");
+        let contours = s.profile_contours(&TessellationConfig::default());
+        assert_eq!(contours.len(), 1, "slot chains into one contour");
+        let pts = &contours[0];
+        // Two arcs (>= 8 samples each) + two line segments.
+        assert!(pts.len() >= 18, "sample points {}", pts.len());
+        // Slot area = rectangle 20×6 + circle π·3².
+        let area: f64 = pts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let q = pts[(i + 1) % pts.len()];
+                p.x * q.y - q.x * p.y
+            })
+            .sum::<f64>()
+            * 0.5;
+        let expected = 20.0 * 6.0 + std::f64::consts::PI * 9.0;
+        assert!(
+            (area - expected).abs() / expected < 0.05,
+            "area {area} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn slot_restores_shape_after_perturbation() {
+        let mut s = Sketch::new(SketchId::new(1), "slot", plane());
+        let [bottom, _head, _top, tail] = s
+            .add_slot(Point2::new(-10.0, 0.0), Point2::new(10.0, 0.0), 3.0)
+            .expect("slot");
+        // Drag the bottom side off its tangent position.
+        if let Some(SketchEntity::Line { start, end, .. }) = s.entities.get_mut(&bottom) {
+            *start = Point2::new(-8.0, -2.0);
+            *end = Point2::new(8.0, -1.0);
+        }
+        let report = s.solve().expect("solve");
+        assert!(
+            report.is_solved(),
+            "status {:?} residual {}",
+            report.status,
+            report.residual
+        );
+
+        // Invariants (the solver may rigidly translate the slot, so we
+        // check relations, not absolute coordinates):
+        // 1. both arc centers sit at distance `radius` from the bottom line
+        //    (tangency),
+        // 2. all joints stay coincident (contour closure).
+        let line = match s.entities.get(&bottom) {
+            Some(SketchEntity::Line { start, end, .. }) => (*start, *end),
+            _ => panic!("bottom line missing"),
+        };
+        let dist_to = |p: Point2| -> f64 {
+            let (a, b) = line;
+            let d = b - a;
+            let len = d.norm();
+            (d.y * p.x - d.x * p.y + b.x * a.y - b.y * a.x).abs() / len
+        };
+        for arc in [tail, _head] {
+            if let Some(SketchEntity::Arc { center, radius, .. }) = s.entities.get(&arc) {
+                let d = dist_to(*center);
+                assert!((d - radius).abs() < 1e-6, "tangency {d} vs {radius}");
+            }
+        }
+        // Contour closure: the bottom line's start meets the tail arc's
+        // END point (tail spans [theta_n, theta_n + pi]).
+        if let Some(SketchEntity::Arc {
+            center,
+            radius,
+            end_angle,
+            ..
+        }) = s.entities.get(&tail)
+        {
+            let arc_end = Point2::new(
+                center.x + radius * end_angle.cos(),
+                center.y + radius * end_angle.sin(),
+            );
+            assert!(
+                (arc_end - line.0).norm() < 1e-6,
+                "joint gap {}",
+                (arc_end - line.0).norm()
+            );
+        }
+    }
+
+    #[test]
+    fn regular_polygon_chains_and_round_trips() {
+        for sides in [3usize, 5, 8] {
+            let mut s = Sketch::new(SketchId::new(1), "poly", plane());
+            let lines = s
+                .add_polygon(Point2::origin(), 10.0, sides, 0.0)
+                .expect("polygon");
+            assert_eq!(lines.len(), sides);
+
+            let report = s.solve().expect("solve");
+            // The macro is created consistent; solving is a no-op.
+            assert!(report.is_solved(), "n={sides} residual {}", report.residual);
+
+            let contours = s.profile_contours(&TessellationConfig::default());
+            assert_eq!(contours.len(), 1, "n={sides}");
+            let pts = &contours[0];
+            // Regular n-gon area with circumradius r.
+            let expected =
+                0.5 * sides as f64 * 100.0 * (std::f64::consts::TAU / sides as f64).sin();
+            let area: f64 = pts
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let q = pts[(i + 1) % pts.len()];
+                    p.x * q.y - q.x * p.y
+                })
+                .sum::<f64>()
+                * 0.5;
+            assert_abs_diff_eq!(area, expected, epsilon = 1e-9);
+        }
+    }
+
+    #[test]
+    fn polygon_perturbation_stays_regular() {
+        let mut s = Sketch::new(SketchId::new(1), "poly", plane());
+        let lines = s
+            .add_polygon(Point2::origin(), 10.0, 6, 0.0)
+            .expect("polygon");
+        // Push one vertex around; the constraints must restore regularity.
+        if let Some(SketchEntity::Line { start, end, .. }) = s.entities.get_mut(&lines[2]) {
+            *start = Point2::new(2.0, 9.0);
+            *end = Point2::new(-1.0, 11.0);
+        }
+        let report = s.solve().expect("solve");
+        assert!(report.is_solved(), "residual {}", report.residual);
+        // All side lengths must be equal again.
+        let mut lengths = Vec::new();
+        for id in &lines {
+            if let Some(SketchEntity::Line { start, end, .. }) = s.entities.get(id) {
+                lengths.push((end - start).norm());
+            }
+        }
+        let l0 = lengths[0];
+        for (i, l) in lengths.iter().enumerate() {
+            assert!((l - l0).abs() < 1e-6, "side {i} length {l} vs {l0}");
+        }
+    }
+
+    #[test]
+    fn slot_and_polygon_reject_bad_input() {
+        let mut s = Sketch::new(SketchId::new(1), "bad", plane());
+        assert!(s.add_slot(Point2::origin(), Point2::origin(), 3.0).is_err());
+        assert!(s
+            .add_slot(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0), 0.0)
+            .is_err());
+        assert!(s.add_polygon(Point2::origin(), 10.0, 2, 0.0).is_err());
+        assert!(s.add_polygon(Point2::origin(), 0.0, 5, 0.0).is_err());
+    }
+
+    /// Regression: the Angle constraint Jacobian used the target's
+    /// cos/sin instead of the current angle's, so angle-constrained
+    /// sketches stalled at residuals ~1e-2 instead of converging.
+    /// (Found while bringing up the polygon macro; fixed together with
+    /// the wrapped-angle residual.)
+    #[test]
+    fn angle_constraint_converges_after_perturbation() {
+        let mut s = Sketch::new(SketchId::new(1), "ang", plane());
+        let a = s.add_line(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+        let b = s.add_line(Point2::new(0.0, 0.0), Point2::new(5.0, 8.66));
+        s.add_constraint(Constraint::FixPoint {
+            entity: a,
+            point: PointRole::Start,
+            position: (0.0, 0.0),
+        });
+        s.add_constraint(Constraint::Coincident {
+            a,
+            a_point: PointRole::Start,
+            b,
+            b_point: PointRole::Start,
+        });
+        s.add_constraint(Constraint::Horizontal { line: a });
+        s.add_constraint(Constraint::Length {
+            line: a,
+            value: 10.0,
+        });
+        s.add_constraint(Constraint::Length {
+            line: b,
+            value: 10.0,
+        });
+        s.add_constraint(Constraint::Angle {
+            a,
+            b,
+            value: 60_f64.to_radians(),
+        });
+        // Perturb b's endpoint and expect exact restoration.
+        if let Some(SketchEntity::Line { end, .. }) = s.entities.get_mut(&b) {
+            *end = Point2::new(2.0, 12.0);
+        }
+        let report = s.solve().expect("solve");
+        assert!(
+            report.is_solved(),
+            "status {:?} residual {}",
+            report.status,
+            report.residual
+        );
+        if let Some(SketchEntity::Line { end, .. }) = s.entities.get(&b) {
+            assert_abs_diff_eq!(end.x, 5.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(end.y, 8.660254037844, epsilon = 1e-6);
+        }
     }
 }

@@ -50,9 +50,7 @@ impl FeatureTree {
 
     /// All nodes in evaluation order.
     pub fn nodes_in_order(&self) -> impl Iterator<Item = &FeatureNode> {
-        self.order
-            .iter()
-            .filter_map(move |id| self.nodes.get(id))
+        self.order.iter().filter_map(move |id| self.nodes.get(id))
     }
 
     /// The evaluation order (ids).
@@ -88,7 +86,11 @@ impl FeatureTree {
         }
         let parents: BTreeSet<FeatureId> = deps.into_iter().collect();
         for p in &parents {
-            self.nodes.get_mut(p).expect("checked above").children.insert(id);
+            self.nodes
+                .get_mut(p)
+                .expect("checked above")
+                .children
+                .insert(id);
         }
         let node = FeatureNode {
             id,

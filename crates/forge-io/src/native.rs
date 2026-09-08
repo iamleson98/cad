@@ -20,8 +20,8 @@ pub fn save_document(path: &Path, doc: &Document) -> Result<()> {
 /// Load a document from RON, validating the format version.
 pub fn load_document(path: &Path) -> Result<Document> {
     let data = std::fs::read_to_string(path)?;
-    let doc: Document = ron::from_str(&data)
-        .map_err(|e| IoError::Serde(format!("ron decode: {e}")))?;
+    let doc: Document =
+        ron::from_str(&data).map_err(|e| IoError::Serde(format!("ron decode: {e}")))?;
     if doc.format_version > forge_core::NATIVE_FORMAT_VERSION {
         return Err(IoError::Unsupported(format!(
             "file format version {} is newer than supported {}",
@@ -35,17 +35,21 @@ pub fn load_document(path: &Path) -> Result<Document> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_core::{FeatureId, Point2, Point3, SketchId, Vector3};
     use forge_model::{
         Document, ExtrudeOp, ExtrudeParams, Feature, PrimitiveKind, PrimitiveParams,
     };
-    use forge_core::{FeatureId, Point2, Point3, SketchId, Vector3};
     use forge_sketch::{DatumPlane, Sketch, SketchPlane};
 
     fn sample_doc() -> Document {
         let mut doc = Document::new("native-test");
-        let mut sketch = Sketch::new(SketchId::new(1), "profile", SketchPlane::Datum {
-            datum: DatumPlane::XY,
-        });
+        let mut sketch = Sketch::new(
+            SketchId::new(1),
+            "profile",
+            SketchPlane::Datum {
+                datum: DatumPlane::XY,
+            },
+        );
         sketch.add_rectangle(Point2::new(-5.0, -5.0), Point2::new(5.0, 5.0));
         let sketch_id = doc.add_feature(Feature::Sketch(sketch)).unwrap();
         doc.add_feature(Feature::Extrude(ExtrudeParams {

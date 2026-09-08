@@ -39,9 +39,7 @@ pub fn eval_point(control: &[Point2], t: f64) -> Point2 {
     let b2 = (-3.0 * u.powi(3) + 3.0 * u.powi(2) + 3.0 * u + 1.0) / 6.0;
     let b3 = u.powi(3) / 6.0;
 
-    Point2::from(
-        p[0].coords * b0 + p[1].coords * b1 + p[2].coords * b2 + p[3].coords * b3,
-    )
+    Point2::from(p[0].coords * b0 + p[1].coords * b1 + p[2].coords * b2 + p[3].coords * b3)
 }
 
 /// Sample the spline into a polyline with `samples` intervals.

@@ -7,7 +7,7 @@
 use crate::{ExportMesh, IoError, Result};
 use forge_core::Vector3;
 use forge_geometry::TriMesh;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
 
 const BINARY_HEADER_LEN: usize = 80;
@@ -27,11 +27,10 @@ pub fn write_binary_stl(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
 }
 
 fn append_binary_mesh(buf: &mut Vec<u8>, mesh: &TriMesh) {
-    let mut normal = [0f32; 3];
     for t in 0..mesh.tri_count() {
         let [a, b, c] = mesh.triangle(t);
         let n = unit_or_zero((b - a).cross(&(c - a)));
-        normal = [n.x as f32, n.y as f32, n.z as f32];
+        let normal = [n.x as f32, n.y as f32, n.z as f32];
         buf.extend_from_slice(&normal.map(|v| v.to_le_bytes()).concat());
         for p in [a, b, c] {
             buf.extend_from_slice(&(p.x as f32).to_le_bytes());
@@ -147,7 +146,9 @@ fn read_ascii(data: &[u8]) -> Result<TriMesh> {
                 None
             }
         }) {
-            let mut it = rest.split_whitespace().filter_map(|v| v.parse::<f64>().ok());
+            let mut it = rest
+                .split_whitespace()
+                .filter_map(|v| v.parse::<f64>().ok());
             let (x, y, z) = (it.next(), it.next(), it.next());
             if let (Some(x), Some(y), Some(z)) = (x, y, z) {
                 current.push(forge_core::Point3::new(x, y, z));

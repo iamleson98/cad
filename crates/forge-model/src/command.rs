@@ -303,8 +303,14 @@ mod tests {
         let mut stack = CommandStack::new();
         for i in 0..500 {
             doc.add_feature(box_feature(i as f64 + 1.0)).unwrap();
-            let node = doc.tree.get(FeatureId::new((i + 1) as u64)).cloned().unwrap();
-            stack.execute(Command::AddFeature { node }, &mut doc).unwrap();
+            let node = doc
+                .tree
+                .get(FeatureId::new((i + 1) as u64))
+                .cloned()
+                .unwrap();
+            stack
+                .execute(Command::AddFeature { node }, &mut doc)
+                .unwrap();
         }
         assert_eq!(stack.undo_depth(), 500);
         for _ in 0..500 {
@@ -320,7 +326,9 @@ mod tests {
         let mut stack = CommandStack::new();
         let id1 = doc.add_feature(box_feature(5.0)).unwrap();
         let node = doc.tree.get(id1).cloned().unwrap();
-        stack.execute(Command::AddFeature { node }, &mut doc).unwrap();
+        stack
+            .execute(Command::AddFeature { node }, &mut doc)
+            .unwrap();
         stack.undo(&mut doc).unwrap();
         assert!(stack.can_redo());
         // A new command discards the redo branch. Note: the id allocator

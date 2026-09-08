@@ -114,7 +114,6 @@ pub struct Renderer {
     /// The UI surface format the composite pass writes into.
     target_format: wgpu::TextureFormat,
 
-    camera_bgl: wgpu::BindGroupLayout,
     model_bgl: wgpu::BindGroupLayout,
     camera_buf: wgpu::Buffer,
     camera_bg: wgpu::BindGroup,
@@ -535,7 +534,6 @@ impl Renderer {
             device,
             queue,
             target_format,
-            camera_bgl,
             model_bgl,
             camera_buf,
             camera_bg,
@@ -591,16 +589,20 @@ impl Renderer {
                     normal: [n.x as f32, n.y as f32, n.z as f32],
                 });
             }
-            let vertex_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("body-vertices"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            let index_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("body-indices"),
-                contents: bytemuck::cast_slice(&mesh.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
+            let vertex_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("body-vertices"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let index_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("body-indices"),
+                    contents: bytemuck::cast_slice(&mesh.indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
 
             // Feature edge lines.
             let edges = if scene.show_edges {
@@ -621,22 +623,26 @@ impl Renderer {
                     _pad: 0.0,
                 });
             }
-            let line_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("body-lines"),
-                contents: bytemuck::cast_slice(&line_verts),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+            let line_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("body-lines"),
+                    contents: bytemuck::cast_slice(&line_verts),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
 
             let model = ModelUniform {
                 model: glam::Mat4::IDENTITY.to_cols_array_2d(),
                 color: body.style.color,
                 pick_id: [body.id.raw() as f32, 0.0, 0.0, 0.0],
             };
-            let model_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("body-model"),
-                contents: bytemuck::bytes_of(&model),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
+            let model_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("body-model"),
+                    contents: bytemuck::bytes_of(&model),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
             let model_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("body-model-bg"),
                 layout: &self.model_bgl,
@@ -652,13 +658,13 @@ impl Renderer {
                 color: [0.06, 0.07, 0.09, 0.9],
                 pick_id: [0.0; 4],
             };
-            let line_buf_uniform = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("line-model"),
-                    contents: bytemuck::bytes_of(&line_model),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
+            let line_buf_uniform =
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("line-model"),
+                        contents: bytemuck::bytes_of(&line_model),
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    });
             let line_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("line-model-bg"),
                 layout: &self.model_bgl,
@@ -695,8 +701,7 @@ impl Renderer {
         self.pick_tex = None;
         self.pick_depth_tex = None;
 
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING;
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         self.color_tex = Some(self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("color-target"),
             size: wgpu::Extent3d {
@@ -751,8 +756,7 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: PICK_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         }));
         self.pick_depth_tex = Some(self.device.create_texture(&wgpu::TextureDescriptor {
@@ -788,11 +792,8 @@ impl Renderer {
 
         // Camera uniform.
         let cam_uniform = camera.uniform(aspect, (size.0 as f64, size.1 as f64));
-        self.queue.write_buffer(
-            &self.camera_buf,
-            0,
-            bytemuck::bytes_of(&cam_uniform),
-        );
+        self.queue
+            .write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&cam_uniform));
 
         // Composite uniforms.
         let composite = CompositeUniforms {
@@ -851,19 +852,17 @@ impl Renderer {
                         depth_slice: None,
                     }),
                 ],
-                depth_stencil_attachment: Some(
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view: &depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                    },
-                ),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                }),
                 multiview_mask: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -894,19 +893,17 @@ impl Renderer {
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: Some(
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view: &depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                    },
-                ),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                }),
                 multiview_mask: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -955,19 +952,17 @@ impl Renderer {
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: Some(
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view: &depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                    },
-                ),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                }),
                 multiview_mask: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -1065,16 +1060,14 @@ impl Renderer {
                     },
                     depth_slice: None,
                 })],
-                depth_stencil_attachment: Some(
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view: &pick_depth,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Discard,
-                        }),
-                        stencil_ops: None,
-                    },
-                ),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &pick_depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
                 multiview_mask: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -1135,13 +1128,15 @@ impl Renderer {
             let call_buf = buf.clone();
             let done = done.clone();
             let data = data.clone();
-            call_buf.slice(..).map_async(wgpu::MapMode::Read, move |_result| {
-                if let Ok(mapping) = cb_buf.slice(..).get_mapped_range() {
-                    // Copy the mapped bytes out.
-                    *data.lock().unwrap() = Some(mapping.to_vec());
-                }
-                done.store(true, std::sync::atomic::Ordering::Release);
-            });
+            call_buf
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |_result| {
+                    if let Ok(mapping) = cb_buf.slice(..).get_mapped_range() {
+                        // Copy the mapped bytes out.
+                        *data.lock().unwrap() = Some(mapping.to_vec());
+                    }
+                    done.store(true, std::sync::atomic::Ordering::Release);
+                });
         }
         self.pick_readback = Some(PickReadback { buf, done, data });
     }
@@ -1155,16 +1150,12 @@ impl Renderer {
     pub fn poll_pick(&mut self) -> Option<PickResult> {
         if let Some(readback) = self.pick_readback.take() {
             // Non-blocking poll to drive the callback.
-            let _ = self
-                .device
-                .poll(wgpu::PollType::Poll);
+            let _ = self.device.poll(wgpu::PollType::Poll);
             if readback.done.load(std::sync::atomic::Ordering::Acquire) {
                 let data = readback.data.lock().unwrap().take();
                 readback.buf.unmap();
                 let body = data.and_then(|bytes| {
-                    let id = u32::from_le_bytes(
-                        bytes[0..4].try_into().expect("4 bytes"),
-                    );
+                    let id = u32::from_le_bytes(bytes[0..4].try_into().expect("4 bytes"));
                     if id == 0 {
                         None
                     } else {
@@ -1205,10 +1196,22 @@ fn build_grid(extent: f64, step: f64) -> (Vec<LineVertex>, u32) {
     let n = (extent / step) as i64;
     for i in -n..=n {
         let v = i as f32 * step as f32;
-        verts.push(LineVertex { pos: [-extent as f32, v, 0.0], _pad: 0.0 });
-        verts.push(LineVertex { pos: [extent as f32, v, 0.0], _pad: 0.0 });
-        verts.push(LineVertex { pos: [v, -extent as f32, 0.0], _pad: 0.0 });
-        verts.push(LineVertex { pos: [v, extent as f32, 0.0], _pad: 0.0 });
+        verts.push(LineVertex {
+            pos: [-extent as f32, v, 0.0],
+            _pad: 0.0,
+        });
+        verts.push(LineVertex {
+            pos: [extent as f32, v, 0.0],
+            _pad: 0.0,
+        });
+        verts.push(LineVertex {
+            pos: [v, -extent as f32, 0.0],
+            _pad: 0.0,
+        });
+        verts.push(LineVertex {
+            pos: [v, extent as f32, 0.0],
+            _pad: 0.0,
+        });
     }
     let count = verts.len() as u32;
     (verts, count)

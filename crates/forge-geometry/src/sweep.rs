@@ -87,7 +87,12 @@ fn frame(plane: &Plane) -> (Vector3, Vector3, Vector3) {
 }
 
 /// Point at plane-local `(x, y)` and height `z` above the plane.
-fn plane_point(frame: (Vector3, Vector3, Vector3), origin: &Point3, local: Point2, z: f64) -> Point3 {
+fn plane_point(
+    frame: (Vector3, Vector3, Vector3),
+    origin: &Point3,
+    local: Point2,
+    z: f64,
+) -> Point3 {
     let (u, v, n) = frame;
     *origin + u * local.x + v * local.y + n * z
 }
@@ -112,7 +117,7 @@ pub fn extrude(profile: &Profile2D, plane: &Plane, params: &ExtrudeParams) -> Re
     let origin = plane.origin;
 
     // Vertex layout: [ upper (z1): 0..v ][ lower (z0): v..2v ].
-    let mut mesh = TriMesh::with_capacity(2 * v, tri.triangles.len() * 2 + perimeter(&profile) * 2);
+    let mut mesh = TriMesh::with_capacity(2 * v, tri.triangles.len() * 2 + perimeter(profile) * 2);
     for p in &tri.vertices {
         mesh.positions.push(plane_point(f, &origin, *p, z1));
     }
@@ -126,22 +131,18 @@ pub fn extrude(profile: &Profile2D, plane: &Plane, params: &ExtrudeParams) -> Re
     }
     // Lower cap: reversed winding.
     for [a, b, c] in &tri.triangles {
-        mesh.indices.extend_from_slice(&[a + v as u32, c + v as u32, b + v as u32]);
+        mesh.indices
+            .extend_from_slice(&[a + v as u32, c + v as u32, b + v as u32]);
     }
 
     // Side walls from the original contours (outer CCW, holes CW – the
     // winding logic below produces outward normals for both).
     let contours: Vec<Vec<u32>> = std::iter::once(0..profile.outer.len() as u32)
-        .chain(
-            profile
-                .holes
-                .iter()
-                .scan(profile.outer.len(), |acc, h| {
-                    let base = *acc as u32;
-                    *acc += h.len();
-                    Some(base..base + h.len() as u32)
-                }),
-        )
+        .chain(profile.holes.iter().scan(profile.outer.len(), |acc, h| {
+            let base = *acc as u32;
+            *acc += h.len();
+            Some(base..base + h.len() as u32)
+        }))
         .map(|r| r.collect())
         .collect();
     // NOTE: hole vertex ranges refer to positions in
@@ -153,7 +154,8 @@ pub fn extrude(profile: &Profile2D, plane: &Plane, params: &ExtrudeParams) -> Re
             let g0 = contour[i];
             let g1 = contour[(i + 1) % n];
             // (a_bot, b_bot, b_top), (a_bot, b_top, a_top)
-            mesh.indices.extend_from_slice(&[g0 + v as u32, g1 + v as u32, g1]);
+            mesh.indices
+                .extend_from_slice(&[g0 + v as u32, g1 + v as u32, g1]);
             mesh.indices.extend_from_slice(&[g0 + v as u32, g1, g0]);
         }
     }
@@ -163,11 +165,7 @@ pub fn extrude(profile: &Profile2D, plane: &Plane, params: &ExtrudeParams) -> Re
 }
 
 fn perimeter(profile: &Profile2D) -> usize {
-    profile
-        .contours()
-        .map(|c| c.len())
-        .sum::<usize>()
-        .max(1)
+    profile.contours().map(|c| c.len()).sum::<usize>().max(1)
 }
 
 /// Parameters of a revolution.
@@ -278,7 +276,12 @@ pub fn revolve(
         } else {
             angle * k as f64 / steps as f64
         };
-        rings.push(world.iter().map(|p| rotate_about_axis(*p, &origin, &axis_dir, a)).collect());
+        rings.push(
+            world
+                .iter()
+                .map(|p| rotate_about_axis(*p, &origin, &axis_dir, a))
+                .collect(),
+        );
     }
 
     let n = outer.len();
@@ -384,13 +387,7 @@ pub fn loft(profiles: &[Profile2D], planes: &[Plane]) -> Result<TriMesh> {
             "loft requires at least two profiles with matching planes".into(),
         )));
     }
-    let ring_len = 64usize.max(
-        profiles
-            .iter()
-            .map(|p| p.outer.len())
-            .max()
-            .unwrap_or(16),
-    );
+    let ring_len = 64usize.max(profiles.iter().map(|p| p.outer.len()).max().unwrap_or(16));
 
     // Resampled rings (CCW).
     let mut rings: Vec<Vec<Point2>> = Vec::with_capacity(profiles.len());
@@ -431,15 +428,30 @@ pub fn loft(profiles: &[Profile2D], planes: &[Plane]) -> Result<TriMesh> {
             .iter()
             .map(|p| p.coords)
             .sum();
-        let b: Vector3 = mesh.positions[ring_offsets[rings.len() - 1]..ring_offsets[rings.len() - 1] + ring_len]
+        let b: Vector3 = mesh.positions
+            [ring_offsets[rings.len() - 1]..ring_offsets[rings.len() - 1] + ring_len]
             .iter()
             .map(|p| p.coords)
             .sum();
         (b - a) / ring_len as f64
     };
-    cap_resampled(&mut mesh, &rings[0], &planes[0], ring_offsets[0], true, loft_dir);
+    cap_resampled(
+        &mut mesh,
+        &rings[0],
+        &planes[0],
+        ring_offsets[0],
+        true,
+        loft_dir,
+    );
     let last = rings.len() - 1;
-    cap_resampled(&mut mesh, &rings[last], &planes[last], ring_offsets[last], false, loft_dir);
+    cap_resampled(
+        &mut mesh,
+        &rings[last],
+        &planes[last],
+        ring_offsets[last],
+        false,
+        loft_dir,
+    );
 
     mesh.weld(crate::mesh::WELD_EPS);
     mesh.remove_degenerate(1e-12);
@@ -469,11 +481,17 @@ fn cap_resampled(
         let tri_n = (pb - pa).cross(&(pc - pa));
         let flip = tri_n.dot(&expected) < 0.0;
         if !flip {
-            mesh.indices
-                .extend_from_slice(&[(offset + ia) as u32, (offset + ib) as u32, (offset + ic) as u32]);
+            mesh.indices.extend_from_slice(&[
+                (offset + ia) as u32,
+                (offset + ib) as u32,
+                (offset + ic) as u32,
+            ]);
         } else {
-            mesh.indices
-                .extend_from_slice(&[(offset + ia) as u32, (offset + ic) as u32, (offset + ib) as u32]);
+            mesh.indices.extend_from_slice(&[
+                (offset + ia) as u32,
+                (offset + ic) as u32,
+                (offset + ib) as u32,
+            ]);
         }
     }
     let _ = plane;
@@ -610,11 +628,17 @@ fn cap_sweep(mesh: &mut TriMesh, outer: &[Point2], ring_index: usize, n: usize, 
         let expected = pa - other;
         let flip = normal.dot(&expected) < 0.0;
         if !flip {
-            mesh.indices
-                .extend_from_slice(&[(offset + ia) as u32, (offset + ib) as u32, (offset + ic) as u32]);
+            mesh.indices.extend_from_slice(&[
+                (offset + ia) as u32,
+                (offset + ib) as u32,
+                (offset + ic) as u32,
+            ]);
         } else {
-            mesh.indices
-                .extend_from_slice(&[(offset + ia) as u32, (offset + ic) as u32, (offset + ib) as u32]);
+            mesh.indices.extend_from_slice(&[
+                (offset + ia) as u32,
+                (offset + ic) as u32,
+                (offset + ib) as u32,
+            ]);
         }
     }
 }
@@ -640,10 +664,14 @@ mod tests {
     #[test]
     fn extrude_box_volume() {
         let profile = square_profile((0.0, 0.0), (10.0, 20.0));
-        let mesh = extrude(&profile, &Plane::default(), &ExtrudeParams {
-            distance: 5.0,
-            direction: ExtrudeDirection::Positive,
-        })
+        let mesh = extrude(
+            &profile,
+            &Plane::default(),
+            &ExtrudeParams {
+                distance: 5.0,
+                direction: ExtrudeDirection::Positive,
+            },
+        )
         .unwrap();
         assert!(mesh.is_closed());
         assert_abs_diff_eq!(mesh.volume().unwrap(), 1000.0, epsilon = 1e-6);
@@ -652,10 +680,14 @@ mod tests {
     #[test]
     fn extrude_symmetric_same_volume() {
         let profile = square_profile((-5.0, -5.0), (5.0, 5.0));
-        let mesh = extrude(&profile, &Plane::default(), &ExtrudeParams {
-            distance: 4.0,
-            direction: ExtrudeDirection::Symmetric,
-        })
+        let mesh = extrude(
+            &profile,
+            &Plane::default(),
+            &ExtrudeParams {
+                distance: 4.0,
+                direction: ExtrudeDirection::Symmetric,
+            },
+        )
         .unwrap();
         assert!(mesh.is_closed());
         assert_abs_diff_eq!(mesh.volume().unwrap(), 100.0 * 4.0, epsilon = 1e-6);
@@ -693,8 +725,15 @@ mod tests {
             Point2::new(5.0, 4.0),
         ];
         let params = RevolveParams::default();
-        let mesh = revolve(&contour, &Plane::default(), Point2::origin(), Point2::new(0.0, 1.0), &params, &TessellationConfig::EXPORT)
-            .unwrap();
+        let mesh = revolve(
+            &contour,
+            &Plane::default(),
+            Point2::origin(),
+            Point2::new(0.0, 1.0),
+            &params,
+            &TessellationConfig::EXPORT,
+        )
+        .unwrap();
         assert!(mesh.is_closed());
         let expected = std::f64::consts::PI * (100.0 - 25.0) * 4.0;
         assert!(
@@ -714,8 +753,15 @@ mod tests {
         let params = RevolveParams {
             angle: std::f64::consts::PI,
         };
-        let mesh = revolve(&contour, &Plane::default(), Point2::origin(), Point2::new(0.0, 1.0), &params, &TessellationConfig::EXPORT)
-            .unwrap();
+        let mesh = revolve(
+            &contour,
+            &Plane::default(),
+            Point2::origin(),
+            Point2::new(0.0, 1.0),
+            &params,
+            &TessellationConfig::EXPORT,
+        )
+        .unwrap();
         assert!(mesh.is_closed());
         let expected = std::f64::consts::PI * (100.0 - 25.0) * 4.0 * 0.5;
         assert!(

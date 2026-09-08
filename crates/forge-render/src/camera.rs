@@ -127,7 +127,7 @@ impl Camera {
     /// View matrix (right-handed, eye looking at target).
     fn view_matrix(&self) -> glam::Mat4 {
         let eye = self.eye();
-        glam::Mat4::look_at_rh(
+        glam::camera::rh::view::look_at_mat4(
             glam::Vec3::new(eye.x as f32, eye.y as f32, eye.z as f32),
             glam::Vec3::new(
                 self.target.x as f32,
@@ -143,7 +143,7 @@ impl Camera {
         if self.orthographic {
             let half_h = self.ortho_half_height() as f32;
             let half_w = half_h * aspect as f32;
-            glam::Mat4::orthographic_rh(
+            glam::camera::rh::proj::directx::orthographic(
                 -half_w,
                 half_w,
                 -half_h,
@@ -152,7 +152,7 @@ impl Camera {
                 self.far as f32,
             )
         } else {
-            glam::Mat4::perspective_rh(
+            glam::camera::rh::proj::directx::perspective(
                 self.fov_deg.to_radians() as f32,
                 aspect as f32,
                 self.near as f32,

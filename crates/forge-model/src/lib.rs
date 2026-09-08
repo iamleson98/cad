@@ -26,8 +26,8 @@ pub use document::{Document, Param};
 pub use error::ModelError;
 pub use evaluate::{EvalBody, Evaluation, Evaluator};
 pub use feature::{
-    BooleanFeature, ExtrudeOp, ExtrudeParams, Feature, LoftParams, PrimitiveKind,
-    PrimitiveParams, RevolveParams, SweepParams,
+    BooleanFeature, CircularPatternParams, ExtrudeOp, ExtrudeParams, Feature, LinearPatternParams,
+    LoftParams, MirrorParams, PrimitiveKind, PrimitiveParams, RevolveParams, SweepParams,
 };
 pub use selection::{Selection, SelectionItem};
 pub use tree::{FeatureNode, FeatureTree};

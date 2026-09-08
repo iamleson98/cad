@@ -167,7 +167,12 @@ fn build_equation(sys: &System, c: &Constraint) -> Option<Eq> {
     let mut j = DMatrix::zeros(m, n);
 
     match c {
-        Constraint::Coincident { a, a_point, b, b_point } => {
+        Constraint::Coincident {
+            a,
+            a_point,
+            b,
+            b_point,
+        } => {
             let (pa, ja) = sys.point(*a, *a_point)?;
             let (pb, jb) = sys.point(*b, *b_point)?;
             r[0] = pa.x - pb.x;
@@ -357,7 +362,13 @@ fn build_equation(sys: &System, c: &Constraint) -> Option<Eq> {
                 }
             }
         }
-        Constraint::Distance { a, a_point, b, b_point, value } => {
+        Constraint::Distance {
+            a,
+            a_point,
+            b,
+            b_point,
+            value,
+        } => {
             let (pa, ja) = sys.point(*a, *a_point)?;
             let (pb, jb) = sys.point(*b, *b_point)?;
             let dx = pb.x - pa.x;
@@ -391,11 +402,28 @@ fn build_equation(sys: &System, c: &Constraint) -> Option<Eq> {
             let sin_t = (ax * by - ay * bx) / (la * lb);
             let cos_t = (ax * bx + ay * by) / (la * lb);
             let target = *value;
-            // residual = sin(theta - target)
-            r[0] = sin_t * target.cos() - cos_t * target.sin();
+            // Residual = the wrapped angle difference
+            // atan2(sin(theta - target), cos(theta - target)).
+            //
+            // A plain sin(theta - target) also vanishes at the
+            // supplementary angle theta = target + pi, which lets the
+            // solver settle in wrong-angle basins (e.g. a polygon macro
+            // flipping a turning angle). The wrapped residual is zero
+            // only at theta = target (mod 2pi) and has unit-magnitude
+            // gradient (since sin^2 + cos^2 = 1), so the Gauss-Newton
+            // steps stay well-scaled.
+            let sin_d = sin_t * target.cos() - cos_t * target.sin();
+            let cos_d = cos_t * target.cos() + sin_t * target.sin();
+            r[0] = sin_d.atan2(cos_d);
 
-            let ct = target.cos();
-            let st = target.sin();
+            // Jacobian: r = atan2(sin(phi), cos(phi)) with phi = theta -
+            // target, so dr = d(theta) wherever differentiable, and
+            // theta = atan2(sin_t, cos_t) gives
+            //   dr = cos_t * d(sin_t) - sin_t * d(cos_t)
+            // with **current-angle** weights (a v0.1 bug used the target's
+            // cos/sin, which made large-angle sketches stall).
+            let cw = cos_t;
+            let sw = sin_t;
             let nl = la * lb;
             let cross = ax * by - ay * bx;
             let dot = ax * bx + ay * by;
@@ -423,21 +451,25 @@ fn build_equation(sys: &System, c: &Constraint) -> Option<Eq> {
             let (oa, da) = sys.param_span(*a)?;
             for (k, blk) in ja.iter().enumerate() {
                 if k < da {
-                    let dr_dax = dsda[0] * ct - dcda[0] * st;
-                    let dr_day = dsda[1] * ct - dcda[1] * st;
+                    let dr_dax = dsda[0] * cw - dcda[0] * sw;
+                    let dr_day = dsda[1] * cw - dcda[1] * sw;
                     j[(0, oa + k)] += dr_dax * blk[0] + dr_day * blk[1];
                 }
             }
             let (ob, db) = sys.param_span(*b)?;
             for (k, blk) in jb.iter().enumerate() {
                 if k < db {
-                    let dr_dbx = dsdb[0] * ct - dcdb[0] * st;
-                    let dr_dby = dsdb[1] * ct - dcdb[1] * st;
+                    let dr_dbx = dsdb[0] * cw - dcdb[0] * sw;
+                    let dr_dby = dsdb[1] * cw - dcdb[1] * sw;
                     j[(0, ob + k)] += dr_dbx * blk[0] + dr_dby * blk[1];
                 }
             }
         }
-        Constraint::FixPoint { entity, point, position } => {
+        Constraint::FixPoint {
+            entity,
+            point,
+            position,
+        } => {
             let (p, jp) = sys.point(*entity, *point)?;
             r[0] = p.x - position.0;
             r[1] = p.y - position.1;
@@ -551,12 +583,7 @@ pub fn solve(sketch: &mut Sketch) -> crate::Result<SolveReportInner> {
             }
         };
 
-        let trial: Vec<f64> = sys
-            .x
-            .iter()
-            .zip(delta.iter())
-            .map(|(a, b)| a + b)
-            .collect();
+        let trial: Vec<f64> = sys.x.iter().zip(delta.iter()).map(|(a, b)| a + b).collect();
         let saved = sys.x.clone();
         sys.set_params(trial);
         let mut broken2 = false;

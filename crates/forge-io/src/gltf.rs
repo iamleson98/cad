@@ -122,7 +122,8 @@ pub fn write_gltf(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
 
     let b64 = {
         // base64 (standard alphabet, padded) without external deps.
-        const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = Vec::with_capacity(buffer.len().div_ceil(3) * 4);
         for chunk in buffer.chunks(3) {
             let b = [

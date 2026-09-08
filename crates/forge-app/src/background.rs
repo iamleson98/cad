@@ -10,8 +10,8 @@
 //! - The **tokio runtime** handles file I/O jobs (exports) via
 //!   `spawn_blocking`.
 
-use forge_model::{Document, Evaluation, Evaluator};
 use forge_core::FeatureId;
+use forge_model::{Document, Evaluation, Evaluator};
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -82,7 +82,9 @@ fn compute_dirty(
 ) -> Vec<FeatureId> {
     let mut changed: Vec<FeatureId> = Vec::new();
     for id in doc.tree.order().to_vec() {
-        let Some(node) = doc.tree.get(id) else { continue };
+        let Some(node) = doc.tree.get(id) else {
+            continue;
+        };
         let fp = fingerprint(&node.feature, node.suppressed);
         let dirty = match last_fingerprint.get(&id) {
             Some(prev) => *prev != fp,

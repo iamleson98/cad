@@ -49,9 +49,7 @@ pub fn boolean(a: &TriMesh, b: &TriMesh, op: CsgOp) -> Result<TriMesh> {
     // Degenerate operand shortcuts (empty / degenerate meshes).
     if tree_b.is_none() {
         return match (tree_a, op) {
-            (Some(a), CsgOp::Union | CsgOp::Difference) => {
-                polygons_to_mesh(a.into_polygons())
-            }
+            (Some(a), CsgOp::Union | CsgOp::Difference) => polygons_to_mesh(a.into_polygons()),
             (Some(_), CsgOp::Intersection) => Ok(TriMesh::default()),
             (None, _) => Ok(TriMesh::default()),
         };
@@ -128,7 +126,8 @@ fn polygons_to_mesh(polygons: Vec<Polygon>) -> Result<TriMesh> {
         let base = mesh.positions.len() as u32;
         mesh.positions.extend_from_slice(&poly.vertices);
         for k in 1..n - 1 {
-            mesh.indices.extend_from_slice(&[base, base + k as u32, base + (k + 1) as u32]);
+            mesh.indices
+                .extend_from_slice(&[base, base + k as u32, base + (k + 1) as u32]);
         }
     }
     if mesh.tri_count() == 0 {

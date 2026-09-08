@@ -4,7 +4,8 @@ use crate::app::ForgeApp;
 use forge_core::{FeatureId, Point2, Point3, SketchId, Vector3};
 use forge_geometry::ExtrudeDirection;
 use forge_model::{
-    BooleanFeature, Command, ExtrudeOp, ExtrudeParams, Feature, PrimitiveKind, PrimitiveParams,
+    BooleanFeature, CircularPatternParams, Command, ExtrudeOp, ExtrudeParams, Feature,
+    LinearPatternParams, MirrorParams, PrimitiveKind, PrimitiveParams,
 };
 use forge_render::Scene;
 use forge_sketch::{DatumPlane, Sketch, SketchPlane};
@@ -23,35 +24,176 @@ pub struct PaletteEntry {
 pub fn entries() -> Vec<PaletteEntry> {
     use PaletteAction::*;
     vec![
-        PaletteEntry { label: "Add Box", keywords: "primitive solid box", action: AddBox },
-        PaletteEntry { label: "Add Sphere", keywords: "primitive solid sphere", action: AddSphere },
-        PaletteEntry { label: "Add Cylinder", keywords: "primitive solid cylinder", action: AddCylinder },
-        PaletteEntry { label: "Add Cone", keywords: "primitive solid cone", action: AddCone },
-        PaletteEntry { label: "Add Torus", keywords: "primitive solid torus", action: AddTorus },
-        PaletteEntry { label: "New Sketch: rectangle on XY", keywords: "sketch draw rectangle profile", action: NewSketchXY },
-        PaletteEntry { label: "New Sketch: rectangle on YZ", keywords: "sketch draw rectangle", action: NewSketchYZ },
-        PaletteEntry { label: "New Sketch: rectangle on XZ", keywords: "sketch draw rectangle", action: NewSketchXZ },
-        PaletteEntry { label: "Extrude latest sketch (new body)", keywords: "extrude boss solid", action: ExtrudeLastSketch },
-        PaletteEntry { label: "Cut latest body with cylinder", keywords: "boolean cut drill hole", action: CutWithCylinder },
-        PaletteEntry { label: "Union two latest bodies", keywords: "boolean union combine", action: UnionLastTwo },
-        PaletteEntry { label: "Subtract two latest bodies", keywords: "boolean difference subtract", action: DifferenceLastTwo },
-        PaletteEntry { label: "Intersect two latest bodies", keywords: "boolean intersection", action: IntersectLastTwo },
-        PaletteEntry { label: "Delete selected feature", keywords: "remove feature", action: DeleteSelected },
-        PaletteEntry { label: "Suppress selected feature", keywords: "toggle suppress", action: SuppressSelected },
-        PaletteEntry { label: "Undo", keywords: "history revert", action: Undo },
-        PaletteEntry { label: "Redo", keywords: "history forward", action: Redo },
-        PaletteEntry { label: "Fit view", keywords: "zoom frame camera", action: FitView },
-        PaletteEntry { label: "Toggle perspective / orthographic", keywords: "projection camera", action: ToggleProjection },
-        PaletteEntry { label: "Front view", keywords: "camera", action: FrontView },
-        PaletteEntry { label: "Top view", keywords: "camera", action: TopView },
-        PaletteEntry { label: "Right view", keywords: "camera", action: RightView },
-        PaletteEntry { label: "Isometric view", keywords: "camera iso", action: IsoView },
-        PaletteEntry { label: "Toggle ground grid", keywords: "grid", action: ToggleGrid },
-        PaletteEntry { label: "Toggle feature edges", keywords: "edges lines", action: ToggleEdges },
-        PaletteEntry { label: "Save document (.forgecad)", keywords: "file save native", action: SaveNative },
-        PaletteEntry { label: "Export STL", keywords: "file export mesh", action: ExportSTL },
-        PaletteEntry { label: "Export OBJ", keywords: "file export mesh", action: ExportOBJ },
-        PaletteEntry { label: "Export glTF", keywords: "file export mesh", action: ExportGLTF },
+        PaletteEntry {
+            label: "Add Box",
+            keywords: "primitive solid box",
+            action: AddBox,
+        },
+        PaletteEntry {
+            label: "Add Sphere",
+            keywords: "primitive solid sphere",
+            action: AddSphere,
+        },
+        PaletteEntry {
+            label: "Add Cylinder",
+            keywords: "primitive solid cylinder",
+            action: AddCylinder,
+        },
+        PaletteEntry {
+            label: "Add Cone",
+            keywords: "primitive solid cone",
+            action: AddCone,
+        },
+        PaletteEntry {
+            label: "Add Torus",
+            keywords: "primitive solid torus",
+            action: AddTorus,
+        },
+        PaletteEntry {
+            label: "New Sketch: rectangle on XY",
+            keywords: "sketch draw rectangle profile",
+            action: NewSketchXY,
+        },
+        PaletteEntry {
+            label: "New Sketch: rectangle on YZ",
+            keywords: "sketch draw rectangle",
+            action: NewSketchYZ,
+        },
+        PaletteEntry {
+            label: "New Sketch: rectangle on XZ",
+            keywords: "sketch draw rectangle",
+            action: NewSketchXZ,
+        },
+        PaletteEntry {
+            label: "New Sketch: slot on XY",
+            keywords: "sketch draw slot obround stadium hole",
+            action: NewSketchSlotXY,
+        },
+        PaletteEntry {
+            label: "New Sketch: hexagon on XY",
+            keywords: "sketch draw polygon hexagon bolt",
+            action: NewSketchHexXY,
+        },
+        PaletteEntry {
+            label: "Extrude latest sketch (new body)",
+            keywords: "extrude boss solid",
+            action: ExtrudeLastSketch,
+        },
+        PaletteEntry {
+            label: "Cut latest body with cylinder",
+            keywords: "boolean cut drill hole",
+            action: CutWithCylinder,
+        },
+        PaletteEntry {
+            label: "Union two latest bodies",
+            keywords: "boolean union combine",
+            action: UnionLastTwo,
+        },
+        PaletteEntry {
+            label: "Subtract two latest bodies",
+            keywords: "boolean difference subtract",
+            action: DifferenceLastTwo,
+        },
+        PaletteEntry {
+            label: "Intersect two latest bodies",
+            keywords: "boolean intersection",
+            action: IntersectLastTwo,
+        },
+        PaletteEntry {
+            label: "Linear pattern latest body (x4)",
+            keywords: "pattern array repeat copy linear",
+            action: LinearPatternLast,
+        },
+        PaletteEntry {
+            label: "Circular pattern latest body (x6)",
+            keywords: "pattern array repeat copy circular polar",
+            action: CircularPatternLast,
+        },
+        PaletteEntry {
+            label: "Mirror latest body across YZ",
+            keywords: "mirror reflect symmetry plane",
+            action: MirrorLastYZ,
+        },
+        PaletteEntry {
+            label: "Delete selected feature",
+            keywords: "remove feature",
+            action: DeleteSelected,
+        },
+        PaletteEntry {
+            label: "Suppress selected feature",
+            keywords: "toggle suppress",
+            action: SuppressSelected,
+        },
+        PaletteEntry {
+            label: "Undo",
+            keywords: "history revert",
+            action: Undo,
+        },
+        PaletteEntry {
+            label: "Redo",
+            keywords: "history forward",
+            action: Redo,
+        },
+        PaletteEntry {
+            label: "Fit view",
+            keywords: "zoom frame camera",
+            action: FitView,
+        },
+        PaletteEntry {
+            label: "Toggle perspective / orthographic",
+            keywords: "projection camera",
+            action: ToggleProjection,
+        },
+        PaletteEntry {
+            label: "Front view",
+            keywords: "camera",
+            action: FrontView,
+        },
+        PaletteEntry {
+            label: "Top view",
+            keywords: "camera",
+            action: TopView,
+        },
+        PaletteEntry {
+            label: "Right view",
+            keywords: "camera",
+            action: RightView,
+        },
+        PaletteEntry {
+            label: "Isometric view",
+            keywords: "camera iso",
+            action: IsoView,
+        },
+        PaletteEntry {
+            label: "Toggle ground grid",
+            keywords: "grid",
+            action: ToggleGrid,
+        },
+        PaletteEntry {
+            label: "Toggle feature edges",
+            keywords: "edges lines",
+            action: ToggleEdges,
+        },
+        PaletteEntry {
+            label: "Save document (.forgecad)",
+            keywords: "file save native",
+            action: SaveNative,
+        },
+        PaletteEntry {
+            label: "Export STL",
+            keywords: "file export mesh",
+            action: ExportSTL,
+        },
+        PaletteEntry {
+            label: "Export OBJ",
+            keywords: "file export mesh",
+            action: ExportOBJ,
+        },
+        PaletteEntry {
+            label: "Export glTF",
+            keywords: "file export mesh",
+            action: ExportGLTF,
+        },
     ]
 }
 
@@ -66,11 +208,16 @@ pub enum PaletteAction {
     NewSketchXY,
     NewSketchYZ,
     NewSketchXZ,
+    NewSketchSlotXY,
+    NewSketchHexXY,
     ExtrudeLastSketch,
     CutWithCylinder,
     UnionLastTwo,
     DifferenceLastTwo,
     IntersectLastTwo,
+    LinearPatternLast,
+    CircularPatternLast,
+    MirrorLastYZ,
     DeleteSelected,
     SuppressSelected,
     Undo,
@@ -100,13 +247,9 @@ pub fn fuzzy_score(query: &str, label: &str, keywords: &str) -> Option<usize> {
     let mut score = 0usize;
     let mut last = 0usize;
     for c in q.chars() {
-        match hay[last..].find(c) {
-            Some(idx) => {
-                score += idx + 1; // earlier matches score better
-                last += idx + 1;
-            }
-            None => return None,
-        }
+        let idx = hay[last..].find(c)?;
+        score += idx + 1; // earlier matches score better
+        last += idx + 1;
     }
     Some(score)
 }
@@ -118,19 +261,27 @@ impl PaletteAction {
         match self {
             AddBox => app.add_primitive(PrimitiveKind::Box, Vector3::new(40.0, 30.0, 20.0)),
             AddSphere => app.add_primitive(PrimitiveKind::Sphere, Vector3::new(20.0, 0.0, 0.0)),
-            AddCylinder => app.add_primitive(PrimitiveKind::Cylinder, Vector3::new(10.0, 30.0, 0.0)),
+            AddCylinder => {
+                app.add_primitive(PrimitiveKind::Cylinder, Vector3::new(10.0, 30.0, 0.0))
+            }
             AddCone => app.add_primitive(PrimitiveKind::Cone, Vector3::new(12.0, 6.0, 25.0)),
             AddTorus => app.add_primitive(PrimitiveKind::Torus, Vector3::new(20.0, 6.0, 0.0)),
 
             NewSketchXY => app.add_sketch_rect(DatumPlane::XY),
             NewSketchYZ => app.add_sketch_rect(DatumPlane::YZ),
             NewSketchXZ => app.add_sketch_rect(DatumPlane::XZ),
+            NewSketchSlotXY => app.add_sketch_slot(DatumPlane::XY),
+            NewSketchHexXY => app.add_sketch_polygon(DatumPlane::XY, 6),
 
             ExtrudeLastSketch => app.extrude_last_sketch(),
             CutWithCylinder => app.cut_with_cylinder(),
             UnionLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Union),
             DifferenceLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Difference),
             IntersectLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Intersection),
+
+            LinearPatternLast => app.linear_pattern_last(),
+            CircularPatternLast => app.circular_pattern_last(),
+            MirrorLastYZ => app.mirror_last_yz(),
 
             DeleteSelected => app.delete_selected(),
             SuppressSelected => app.toggle_suppress_selected(),
@@ -219,6 +370,147 @@ impl ForgeApp {
         }
     }
 
+    /// Add a sketch with a parametric slot on a datum plane.
+    pub(crate) fn add_sketch_slot(&mut self, datum: DatumPlane) {
+        let sketch_id = SketchId::new(self.doc.allocator.next_id());
+        let mut sketch = Sketch::new(sketch_id, "slot", SketchPlane::Datum { datum });
+        if let Err(e) = sketch.add_slot(Point2::new(-12.0, 0.0), Point2::new(12.0, 0.0), 5.0) {
+            self.set_status(format!("{e}"));
+            return;
+        }
+        match self.doc.add_feature(Feature::Sketch(sketch.clone())) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(Command::AddFeature { node }, &mut self.doc);
+                }
+                self.set_status("Slot sketch created (tangent, fully parametric)");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Add a sketch with a regular polygon on a datum plane.
+    pub(crate) fn add_sketch_polygon(&mut self, datum: DatumPlane, sides: usize) {
+        let sketch_id = SketchId::new(self.doc.allocator.next_id());
+        let mut sketch = Sketch::new(sketch_id, "polygon", SketchPlane::Datum { datum });
+        if let Err(e) = sketch.add_polygon(Point2::origin(), 15.0, sides, 0.0) {
+            self.set_status(format!("{e}"));
+            return;
+        }
+        match self.doc.add_feature(Feature::Sketch(sketch.clone())) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(Command::AddFeature { node }, &mut self.doc);
+                }
+                self.set_status(format!("{sides}-gon sketch created (equal sides + angles)"));
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// The most recent body-producing feature (pattern/mirror seed).
+    fn last_body_feature(&self) -> Option<FeatureId> {
+        self.doc
+            .tree
+            .order()
+            .iter()
+            .rev()
+            .find(|id| {
+                matches!(
+                    self.doc.feature(**id),
+                    Some(Feature::Primitive(_))
+                        | Some(Feature::Extrude(_))
+                        | Some(Feature::Revolve(_))
+                        | Some(Feature::Loft(_))
+                        | Some(Feature::Sweep(_))
+                        | Some(Feature::Boolean(_))
+                        | Some(Feature::TransformBody { .. })
+                        | Some(Feature::LinearPattern(_))
+                        | Some(Feature::CircularPattern(_))
+                        | Some(Feature::Mirror(_))
+                )
+            })
+            .copied()
+    }
+
+    /// Linear pattern of the latest body: 4 instances along +X.
+    pub(crate) fn linear_pattern_last(&mut self) {
+        let Some(source) = self.last_body_feature() else {
+            self.set_status("No body to pattern: add a solid first");
+            return;
+        };
+        let feature = Feature::LinearPattern(LinearPatternParams {
+            source,
+            direction: Vector3::x(),
+            count: 4,
+            spacing: 50.0,
+            symmetric: false,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        });
+        match self.doc.add_feature(feature) {
+            Ok(_id) => {
+                self.set_status("Linear pattern added (edit count/spacing in the inspector)");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Circular pattern of the latest body: 6 instances around Z.
+    pub(crate) fn circular_pattern_last(&mut self) {
+        let Some(source) = self.last_body_feature() else {
+            self.set_status("No body to pattern: add a solid first");
+            return;
+        };
+        // Put the rotation axis through the world origin so off-origin
+        // bodies form a ring.
+        let feature = Feature::CircularPattern(CircularPatternParams {
+            source,
+            axis_point: Point3::origin(),
+            axis_dir: Vector3::z(),
+            count: 6,
+            angle: std::f64::consts::TAU,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        });
+        match self.doc.add_feature(feature) {
+            Ok(_id) => {
+                self.set_status("Circular pattern added (edit count/angle in the inspector)");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Mirror the latest body across the YZ plane (normal +X).
+    pub(crate) fn mirror_last_yz(&mut self) {
+        let Some(source) = self.last_body_feature() else {
+            self.set_status("No body to mirror: add a solid first");
+            return;
+        };
+        let feature = Feature::Mirror(MirrorParams {
+            source,
+            plane_point: Point3::origin(),
+            plane_normal: Vector3::x(),
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        });
+        match self.doc.add_feature(feature) {
+            Ok(_id) => {
+                self.set_status("Mirror added across the YZ plane");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
     /// Extrude the most recent sketch feature as a new body.
     pub(crate) fn extrude_last_sketch(&mut self) {
         let sketch_id = self
@@ -260,7 +552,9 @@ impl ForgeApp {
             .find(|id| {
                 matches!(
                     self.doc.feature(**id),
-                    Some(Feature::Primitive(_)) | Some(Feature::Extrude(_)) | Some(Feature::Boolean(_))
+                    Some(Feature::Primitive(_))
+                        | Some(Feature::Extrude(_))
+                        | Some(Feature::Boolean(_))
                 )
             })
             .copied();
@@ -314,7 +608,9 @@ impl ForgeApp {
             .filter(|id| {
                 matches!(
                     self.doc.feature(**id),
-                    Some(Feature::Primitive(_)) | Some(Feature::Extrude(_)) | Some(Feature::Boolean(_))
+                    Some(Feature::Primitive(_))
+                        | Some(Feature::Extrude(_))
+                        | Some(Feature::Boolean(_))
                 )
             })
             .copied()
@@ -377,11 +673,14 @@ impl ForgeApp {
         let before = self.doc.tree.get(id).map(|n| n.suppressed).unwrap_or(false);
         let after = !before;
         if self.doc.tree.set_suppressed(id, after).is_ok() {
-            let _ = self.commands.execute(
-                Command::SetSuppressed { id, before, after },
-                &mut self.doc,
-            );
-            self.set_status(if after { "Feature suppressed" } else { "Feature unsuppressed" });
+            let _ = self
+                .commands
+                .execute(Command::SetSuppressed { id, before, after }, &mut self.doc);
+            self.set_status(if after {
+                "Feature suppressed"
+            } else {
+                "Feature unsuppressed"
+            });
             self.request_evaluation();
         }
     }

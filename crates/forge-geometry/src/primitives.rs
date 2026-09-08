@@ -36,8 +36,11 @@ pub fn box_from_center_extents(center: Point3, extents: Vector3) -> TriMesh {
         [0, 1, 5, 4], // -y
     ];
 
-    let mut mesh = TriMesh::default();
-    mesh.positions = p.to_vec();
+    let mut mesh = TriMesh {
+        positions: p.to_vec(),
+        indices: Vec::with_capacity(quads.len() * 6),
+        normals: None,
+    };
     for [a, b, c, d] in quads {
         let (a, b, c, d) = (a as u32, b as u32, c as u32, d as u32);
         mesh.indices.extend_from_slice(&[a, b, c, a, c, d]);
@@ -59,11 +62,7 @@ pub fn sphere(center: Point3, radius: f64, cfg: &TessellationConfig) -> TriMesh 
         let phi = std::f64::consts::PI * i as f64 / rings as f64; // 0..pi
         for j in 0..=sectors {
             let theta = std::f64::consts::TAU * j as f64 / sectors as f64;
-            let n = Vector3::new(
-                phi.sin() * theta.cos(),
-                phi.cos(),
-                phi.sin() * theta.sin(),
-            );
+            let n = Vector3::new(phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin());
             mesh.positions.push(center + n * radius);
         }
     }
@@ -72,7 +71,8 @@ pub fn sphere(center: Point3, radius: f64, cfg: &TessellationConfig) -> TriMesh 
             let a = i * (sectors + 1) + j;
             let b = a + sectors + 1;
             if i > 0 {
-                mesh.indices.extend_from_slice(&[a as u32, (a + 1) as u32, b as u32]);
+                mesh.indices
+                    .extend_from_slice(&[a as u32, (a + 1) as u32, b as u32]);
             }
             if i < rings - 1 {
                 mesh.indices
@@ -98,13 +98,17 @@ pub fn cylinder(
 
     // 0: bottom center, 1: top center.
     mesh.positions.push(base_center);
-    mesh.positions.push(base_center + Vector3::new(0.0, 0.0, height));
+    mesh.positions
+        .push(base_center + Vector3::new(0.0, 0.0, height));
     // Bottom ring then top ring.
     for k in 0..n {
         let ang = std::f64::consts::TAU * k as f64 / n as f64;
         let (c, s) = (ang.cos(), ang.sin());
-        mesh.positions
-            .push(Point3::new(base_center.x + radius * c, base_center.y + radius * s, base_center.z));
+        mesh.positions.push(Point3::new(
+            base_center.x + radius * c,
+            base_center.y + radius * s,
+            base_center.z,
+        ));
     }
     for k in 0..n {
         let ang = std::f64::consts::TAU * k as f64 / n as f64;
@@ -143,7 +147,8 @@ pub fn cone(
     let mut mesh = TriMesh::with_capacity(2 * n + 2, 4 * n);
 
     mesh.positions.push(base_center);
-    mesh.positions.push(base_center + Vector3::new(0.0, 0.0, height));
+    mesh.positions
+        .push(base_center + Vector3::new(0.0, 0.0, height));
     for k in 0..n {
         let ang = std::f64::consts::TAU * k as f64 / n as f64;
         mesh.positions.push(Point3::new(
@@ -185,8 +190,7 @@ pub fn torus(
 ) -> TriMesh {
     let major = cfg.segments_for_circle(major_radius);
     let minor = cfg.segments_for_circle(minor_radius).max(3);
-    let mut mesh =
-        TriMesh::with_capacity(major * minor, major * minor * 2);
+    let mut mesh = TriMesh::with_capacity(major * minor, major * minor * 2);
 
     for i in 0..major {
         let u = std::f64::consts::TAU * i as f64 / major as f64; // around z
@@ -195,12 +199,11 @@ pub fn torus(
             let x = (major_radius + minor_radius * v.cos()) * u.cos();
             let y = (major_radius + minor_radius * v.cos()) * u.sin();
             let z = minor_radius * v.sin();
-            mesh.positions.push(Point3::new(center.x + x, center.y + y, center.z + z));
+            mesh.positions
+                .push(Point3::new(center.x + x, center.y + y, center.z + z));
         }
     }
-    let at = |i: usize, j: usize| -> u32 {
-        ((i % major) * minor + (j % minor)) as u32
-    };
+    let at = |i: usize, j: usize| -> u32 { ((i % major) * minor + (j % minor)) as u32 };
     for i in 0..major {
         for j in 0..minor {
             let a = at(i, j);
@@ -218,7 +221,6 @@ pub fn torus(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_abs_diff_eq;
 
     const CFG: TessellationConfig = TessellationConfig {
         chord_tolerance_mm: 0.02,

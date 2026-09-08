@@ -10,7 +10,7 @@
 
 use crate::document::Document;
 use crate::feature::{ExtrudeOp, Feature, PrimitiveKind};
-use forge_core::{BodyId, FeatureId, Point2, TessellationConfig, Vector3};
+use forge_core::{BodyId, FeatureId, Point2, TessellationConfig, Transform};
 use forge_geometry::{
     boolean, extrude, loft, primitives, revolve, sweep_along_path, CsgOp, Profile2D, TriMesh,
 };
@@ -65,20 +65,11 @@ impl Evaluation {
 }
 
 /// Persistent evaluation cache.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Evaluator {
     cache: BTreeMap<FeatureId, CachedResult>,
     /// Tessellation quality used for all features.
     pub tessellation: TessellationConfig,
-}
-
-impl Default for Evaluator {
-    fn default() -> Self {
-        Self {
-            cache: BTreeMap::new(),
-            tessellation: TessellationConfig::default(),
-        }
-    }
 }
 
 impl Evaluator {
@@ -122,7 +113,9 @@ impl Evaluator {
         let mut reused = 0usize;
 
         for id in doc.tree.order().to_vec() {
-            let Some(node) = doc.tree.get(id) else { continue };
+            let Some(node) = doc.tree.get(id) else {
+                continue;
+            };
             if node.suppressed {
                 self.cache.remove(&id);
                 errors.remove(&id);
@@ -151,11 +144,9 @@ impl Evaluator {
                     if let CachedResult::Body(_) = &result {
                         body_order.push(id);
                     }
-                    // Track boolean consumption.
-                    if let Feature::Boolean(b) = &feature {
-                        for op_id in &b.operands {
-                            consumed.insert(*op_id);
-                        }
+                    // Track operand / target consumption.
+                    for consumed_id in consumed_targets(&feature) {
+                        consumed.insert(consumed_id);
                     }
                     self.cache.insert(id, result);
                 }
@@ -271,37 +262,25 @@ impl Evaluator {
                 }
                 let cfg = &self.tessellation;
                 match p.kind {
-                    PrimitiveKind::Box => primitives::box_from_center_extents(
-                        p.center,
-                        p.dims,
-                    ),
+                    PrimitiveKind::Box => primitives::box_from_center_extents(p.center, p.dims),
                     PrimitiveKind::Sphere => primitives::sphere(p.center, p.dims.x, cfg),
                     PrimitiveKind::Cylinder => {
                         primitives::cylinder(p.center, p.dims.x, p.dims.y, cfg)
                     }
-                    PrimitiveKind::Cone => primitives::cone(
-                        p.center,
-                        p.dims.x,
-                        p.dims.y,
-                        p.dims.z,
-                        cfg,
-                    ),
-                    PrimitiveKind::Torus => {
-                        primitives::torus(p.center, p.dims.x, p.dims.y, cfg)
+                    PrimitiveKind::Cone => {
+                        primitives::cone(p.center, p.dims.x, p.dims.y, p.dims.z, cfg)
                     }
+                    PrimitiveKind::Torus => primitives::torus(p.center, p.dims.x, p.dims.y, cfg),
                 }
             }
 
             Feature::Extrude(p) => {
-                let profiles = self
-                    .cached_profiles(p.profile)
-                    .cloned()
-                    .ok_or_else(|| {
-                        crate::ModelError::MissingEntity(format!(
-                            "profile feature {} has no solved profiles",
-                            p.profile
-                        ))
-                    })?;
+                let profiles = self.cached_profiles(p.profile).cloned().ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!(
+                        "profile feature {} has no solved profiles",
+                        p.profile
+                    ))
+                })?;
                 if profiles.is_empty() {
                     return Err(crate::ModelError::Invalid(
                         "sketch has no closed contours".into(),
@@ -310,9 +289,7 @@ impl Evaluator {
                 let plane = doc
                     .sketch(p.profile)
                     .map(|s| s.plane.to_plane())
-                    .ok_or_else(|| {
-                        crate::ModelError::MissingFeature(format!("{}", p.profile))
-                    })?;
+                    .ok_or_else(|| crate::ModelError::MissingFeature(format!("{}", p.profile)))?;
                 let mut solid = TriMesh::default();
                 for profile in &profiles {
                     let mesh = extrude(
@@ -329,24 +306,19 @@ impl Evaluator {
             }
 
             Feature::Revolve(p) => {
-                let profiles = self
-                    .cached_profiles(p.profile)
-                    .cloned()
-                    .ok_or_else(|| {
-                        crate::ModelError::MissingEntity(format!(
-                            "profile feature {} has no solved profiles",
-                            p.profile
-                        ))
-                    })?;
+                let profiles = self.cached_profiles(p.profile).cloned().ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!(
+                        "profile feature {} has no solved profiles",
+                        p.profile
+                    ))
+                })?;
                 let profile = profiles
                     .first()
                     .ok_or_else(|| crate::ModelError::Invalid("empty profile".into()))?;
                 let plane = doc
                     .sketch(p.profile)
                     .map(|s| s.plane.to_plane())
-                    .ok_or_else(|| {
-                        crate::ModelError::MissingFeature(format!("{}", p.profile))
-                    })?;
+                    .ok_or_else(|| crate::ModelError::MissingFeature(format!("{}", p.profile)))?;
                 let solid = revolve(
                     &profile.outer,
                     &plane,
@@ -362,21 +334,19 @@ impl Evaluator {
                 let mut sections = Vec::new();
                 let mut planes = Vec::new();
                 for s_id in &p.sections {
-                    let profiles = self
-                        .cached_profiles(*s_id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            crate::ModelError::MissingEntity(format!(
-                                "section {} has no profiles",
-                                s_id
-                            ))
-                        })?;
-                    let profile = profiles.first().ok_or_else(|| {
-                        crate::ModelError::Invalid("empty loft section".into())
+                    let profiles = self.cached_profiles(*s_id).cloned().ok_or_else(|| {
+                        crate::ModelError::MissingEntity(format!(
+                            "section {} has no profiles",
+                            s_id
+                        ))
                     })?;
-                    let plane = doc.sketch(*s_id).map(|s| s.plane.to_plane()).ok_or_else(
-                        || crate::ModelError::MissingFeature(format!("{s_id}")),
-                    )?;
+                    let profile = profiles
+                        .first()
+                        .ok_or_else(|| crate::ModelError::Invalid("empty loft section".into()))?;
+                    let plane = doc
+                        .sketch(*s_id)
+                        .map(|s| s.plane.to_plane())
+                        .ok_or_else(|| crate::ModelError::MissingFeature(format!("{s_id}")))?;
                     sections.push(profile.clone());
                     planes.push(plane);
                 }
@@ -384,39 +354,28 @@ impl Evaluator {
             }
 
             Feature::Sweep(p) => {
-                let profiles = self
-                    .cached_profiles(p.profile)
-                    .cloned()
-                    .ok_or_else(|| {
-                        crate::ModelError::MissingEntity(format!(
-                            "profile feature {} has no solved profiles",
-                            p.profile
-                        ))
-                    })?;
+                let profiles = self.cached_profiles(p.profile).cloned().ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!(
+                        "profile feature {} has no solved profiles",
+                        p.profile
+                    ))
+                })?;
                 let profile = profiles
                     .first()
                     .ok_or_else(|| crate::ModelError::Invalid("empty profile".into()))?;
                 let plane = doc
                     .sketch(p.profile)
                     .map(|s| s.plane.to_plane())
-                    .ok_or_else(|| {
-                        crate::ModelError::MissingFeature(format!("{}", p.profile))
-                    })?;
+                    .ok_or_else(|| crate::ModelError::MissingFeature(format!("{}", p.profile)))?;
                 sweep_along_path(&profile.outer, &plane, &p.path)?
             }
 
             Feature::Boolean(b) => {
                 let mut operands = Vec::new();
                 for op_id in &b.operands {
-                    let mesh = self
-                        .cached_body(*op_id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            crate::ModelError::MissingEntity(format!(
-                                "operand {} has no body",
-                                op_id
-                            ))
-                        })?;
+                    let mesh = self.cached_body(*op_id).cloned().ok_or_else(|| {
+                        crate::ModelError::MissingEntity(format!("operand {} has no body", op_id))
+                    })?;
                     operands.push(mesh);
                 }
                 let first = operands
@@ -440,15 +399,40 @@ impl Evaluator {
                 })?;
                 let iso = forge_core::Transform::from_parts(
                     nalgebra::Translation3::new(translation.x, translation.y, translation.z),
-                    nalgebra::UnitQuaternion::from_euler_angles(
-                        rotation.x,
-                        rotation.y,
-                        rotation.z,
-                    ),
+                    nalgebra::UnitQuaternion::from_euler_angles(rotation.x, rotation.y, rotation.z),
                 );
                 let mut m = mesh.transformed(&iso);
                 m.compute_vertex_normals();
                 m
+            }
+
+            Feature::LinearPattern(p) => {
+                let seed = self.cached_body(p.source).cloned().ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!("seed {} has no body", p.source))
+                })?;
+                let instances = linear_instance_transforms(p, p.operation != ExtrudeOp::New)?;
+                self.apply_instances(&instances, p.operation, p.target, &seed)?
+            }
+
+            Feature::CircularPattern(p) => {
+                let seed = self.cached_body(p.source).cloned().ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!("seed {} has no body", p.source))
+                })?;
+                let instances = circular_instance_transforms(p, p.operation != ExtrudeOp::New)?;
+                self.apply_instances(&instances, p.operation, p.target, &seed)?
+            }
+
+            Feature::Mirror(p) => {
+                let source = self.cached_body(p.source).cloned().ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!("source {} has no body", p.source))
+                })?;
+                if p.plane_normal.norm() < 1e-12 {
+                    return Err(crate::ModelError::Invalid(
+                        "mirror plane normal is degenerate".into(),
+                    ));
+                }
+                let mirrored = source.mirrored(&p.plane_point, &p.plane_normal);
+                apply_operation(self, p.operation, p.target, mirrored)?
             }
         };
 
@@ -479,12 +463,186 @@ fn apply_operation(
     }
 }
 
+/// Feature ids hidden once a feature successfully produced a body:
+/// boolean operands, and Join/Cut targets (their geometry lives on in
+/// the consuming feature's result).
+///
+/// Join/Cut **patterns** also hide their seed: the seed instance is part
+/// of the pattern result (SolidWorks feature-pattern semantics).
+fn consumed_targets(feature: &Feature) -> Vec<FeatureId> {
+    fn join_cut_target(op: ExtrudeOp, target: FeatureId) -> Option<FeatureId> {
+        (op != ExtrudeOp::New && !target.is_none()).then_some(target)
+    }
+    match feature {
+        Feature::Boolean(b) => b.operands.clone(),
+        Feature::Extrude(p) => join_cut_target(p.operation, p.target).into_iter().collect(),
+        Feature::Revolve(p) => join_cut_target(p.operation, p.target).into_iter().collect(),
+        Feature::LinearPattern(p) => {
+            let mut v = join_cut_target(p.operation, p.target)
+                .into_iter()
+                .collect::<Vec<_>>();
+            if p.operation != ExtrudeOp::New {
+                v.push(p.source);
+            }
+            v
+        }
+        Feature::CircularPattern(p) => {
+            let mut v = join_cut_target(p.operation, p.target)
+                .into_iter()
+                .collect::<Vec<_>>();
+            if p.operation != ExtrudeOp::New {
+                v.push(p.source);
+            }
+            v
+        }
+        Feature::Mirror(p) => join_cut_target(p.operation, p.target).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Rigid transforms of the pattern copies. For `New` the seed itself is
+/// excluded (it stays visible as the source body, like a SolidWorks body
+/// pattern); for Join/Cut the seed instance is included (feature-pattern
+/// semantics: the target is cut/joined at every instance).
+fn linear_instance_transforms(
+    p: &crate::LinearPatternParams,
+    include_seed: bool,
+) -> crate::Result<Vec<Transform>> {
+    if p.count < 2 {
+        return Err(crate::ModelError::Invalid(
+            "a pattern needs at least 2 instances".into(),
+        ));
+    }
+    if p.direction.norm() < 1e-12 {
+        return Err(crate::ModelError::Invalid(
+            "pattern direction is degenerate".into(),
+        ));
+    }
+    let dir = p.direction.normalize();
+    let count = p.count;
+    let offsets: Vec<f64> = if p.symmetric {
+        // (i - (count-1)/2) * spacing; the seed (offset 0) is included or
+        // excluded by the caller.
+        (0..count)
+            .map(|i| (i as f64 - (count as f64 - 1.0) * 0.5) * p.spacing)
+            .filter(|o| include_seed || o.abs() > 1e-9)
+            .collect()
+    } else {
+        let first = if include_seed { 0 } else { 1 };
+        (first..count).map(|i| i as f64 * p.spacing).collect()
+    };
+    Ok(offsets
+        .into_iter()
+        .map(|o| {
+            Transform::from_parts(
+                nalgebra::Translation3::from(dir * o),
+                nalgebra::UnitQuaternion::identity(),
+            )
+        })
+        .collect())
+}
+
+/// Rigid rotations of the pattern instances about the axis through
+/// `axis_point` along `axis_dir`.
+fn circular_instance_transforms(
+    p: &crate::CircularPatternParams,
+    include_seed: bool,
+) -> crate::Result<Vec<Transform>> {
+    if p.count < 2 {
+        return Err(crate::ModelError::Invalid(
+            "a pattern needs at least 2 instances".into(),
+        ));
+    }
+    if p.axis_dir.norm() < 1e-12 {
+        return Err(crate::ModelError::Invalid(
+            "pattern axis is degenerate".into(),
+        ));
+    }
+    if !p.angle.is_finite() || p.angle <= 1e-12 {
+        return Err(crate::ModelError::Invalid(
+            "pattern angle must be positive".into(),
+        ));
+    }
+    let axis = nalgebra::Unit::new_normalize(p.axis_dir);
+    let count = p.count;
+    let first = if include_seed { 0 } else { 1 };
+    // Full circle: equal pitch TAU/count (k = count would coincide with the
+    // seed). Partial span: k*angle/(count-1) so the last copy lands at
+    // `angle` (SolidWorks "equal spacing" semantics).
+    let angles: Vec<f64> = if p.angle >= std::f64::consts::TAU - 1e-9 {
+        (first..count)
+            .map(|k| std::f64::consts::TAU * k as f64 / count as f64)
+            .collect()
+    } else {
+        (first..count)
+            .map(|k| p.angle * k as f64 / (count as f64 - 1.0))
+            .collect()
+    };
+    Ok(angles
+        .into_iter()
+        .map(|a| {
+            let rot = nalgebra::Rotation3::from_axis_angle(&axis, a);
+            // p' = R(p - c) + c  =>  translation = c - R*c
+            let translation = nalgebra::Translation3::from(
+                p.axis_point.coords - rot.transform_point(&p.axis_point).coords,
+            );
+            Transform::from_parts(
+                translation,
+                nalgebra::UnitQuaternion::from_rotation_matrix(&rot),
+            )
+        })
+        .collect())
+}
+
+impl Evaluator {
+    /// Combine pattern instances with a target (`Join`/`Cut`) or into a
+    /// standalone body (`New`).
+    fn apply_instances(
+        &self,
+        instances: &[Transform],
+        op: ExtrudeOp,
+        target: FeatureId,
+        seed: &TriMesh,
+    ) -> crate::Result<TriMesh> {
+        let instantiate = |t: &Transform| -> TriMesh {
+            let mut m = seed.transformed(t);
+            m.compute_vertex_normals();
+            m
+        };
+        match op {
+            ExtrudeOp::New => {
+                let mut result: Option<TriMesh> = None;
+                for t in instances {
+                    let m = instantiate(t);
+                    result = Some(match result {
+                        None => m,
+                        Some(r) => boolean(&r, &m, CsgOp::Union)?,
+                    });
+                }
+                result
+                    .ok_or_else(|| crate::ModelError::Invalid("pattern produced no copies".into()))
+            }
+            ExtrudeOp::Join | ExtrudeOp::Cut => {
+                let mut result = self.cached_body(target).cloned().ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!("target {} has no body", target))
+                })?;
+                let csg_op = if op == ExtrudeOp::Join {
+                    CsgOp::Union
+                } else {
+                    CsgOp::Difference
+                };
+                for t in instances {
+                    result = boolean(&result, &instantiate(t), csg_op)?;
+                }
+                Ok(result)
+            }
+        }
+    }
+}
+
 /// Convert a solved sketch into profiles (islands with holes), classifying
 /// contours by containment depth (0 = island, 1 = hole).
-pub fn build_profiles(
-    sketch: &Sketch,
-    cfg: &TessellationConfig,
-) -> crate::Result<Vec<Profile2D>> {
+pub fn build_profiles(sketch: &Sketch, cfg: &TessellationConfig) -> crate::Result<Vec<Profile2D>> {
     let contours = sketch.profile_contours(cfg);
     if contours.is_empty() {
         return Ok(Vec::new());
@@ -557,9 +715,7 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 mod tests {
     use super::*;
     use crate::document::Document;
-    use crate::feature::{
-        ExtrudeOp, ExtrudeParams, Feature, PrimitiveKind, PrimitiveParams,
-    };
+    use crate::feature::{ExtrudeOp, ExtrudeParams, Feature, PrimitiveKind, PrimitiveParams};
     use forge_core::{FeatureId, Point3, SketchId, Vector3};
     use forge_sketch::{DatumPlane, Sketch, SketchPlane};
 
@@ -589,16 +745,379 @@ mod tests {
         assert_eq!(result2.evaluated, 0);
     }
 
+    // ---- Patterns & mirror (F-01/02/03) --------------------------------
+
+    fn add_box(doc: &mut Document, name: &str, center: Point3, dims: Vector3) -> FeatureId {
+        doc.add_feature(Feature::Primitive(PrimitiveParams {
+            kind: PrimitiveKind::Box,
+            center,
+            dims,
+        }))
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    #[test]
+    fn mirror_new_body_preserves_volume() {
+        let mut doc = Document::new("mirror");
+        let box_id = add_box(
+            &mut doc,
+            "seed",
+            Point3::new(15.0, 0.0, 0.0),
+            Vector3::new(4.0, 6.0, 8.0),
+        );
+        doc.add_feature(Feature::Mirror(crate::MirrorParams {
+            source: box_id,
+            plane_point: Point3::origin(),
+            plane_normal: Vector3::x(),
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // Seed + mirrored copy are both visible.
+        assert_eq!(result.bodies.len(), 2);
+        let v = result
+            .bodies
+            .iter()
+            .map(|b| b.mesh.volume_signed())
+            .sum::<f64>();
+        assert!((v - 2.0 * 4.0 * 6.0 * 8.0).abs() < 1e-6, "total volume {v}");
+        // The mirrored copy sits on the -X side: bbox min x ~ 13.
+        let mirrored = &result.bodies[1];
+        let bb = mirrored.mesh.bbox();
+        assert!((bb.max.x + 13.0).abs() < 1e-6, "bbox {:?}", bb);
+        assert!((bb.min.x + 17.0).abs() < 1e-6, "bbox {:?}", bb);
+    }
+
+    #[test]
+    fn mirror_join_doubles_symmetric_body() {
+        let mut doc = Document::new("mirror-join");
+        let half = add_box(
+            &mut doc,
+            "half",
+            Point3::new(5.0, 0.0, 0.0),
+            Vector3::new(10.0, 10.0, 10.0),
+        );
+        let joined = doc
+            .add_feature(Feature::Mirror(crate::MirrorParams {
+                source: half,
+                plane_point: Point3::origin(),
+                plane_normal: Vector3::x(),
+                operation: ExtrudeOp::Join,
+                target: half,
+            }))
+            .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // Target consumed, single symmetric body remains.
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(result.bodies[0].source, joined);
+        let v = result.bodies[0].mesh.volume_signed();
+        assert!((v - 2000.0).abs() < 1e-6, "volume {v}");
+        // The seam boxes share the x=0 face; union must stay closed.
+        assert!(result.bodies[0].mesh.is_closed());
+    }
+
+    #[test]
+    fn linear_pattern_new_disjoint_instances() {
+        let mut doc = Document::new("linpat");
+        let seed = add_box(
+            &mut doc,
+            "seed",
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 2.0, 2.0),
+        );
+        doc.add_feature(Feature::LinearPattern(crate::LinearPatternParams {
+            source: seed,
+            direction: Vector3::x(),
+            count: 4,
+            spacing: 10.0,
+            symmetric: false,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // Seed + one pattern body (3 copies unioned).
+        assert_eq!(result.bodies.len(), 2);
+        let pattern = result.bodies.last().unwrap();
+        let v = pattern.mesh.volume_signed();
+        assert!((v - 3.0 * 8.0).abs() < 1e-6, "pattern volume {v}");
+        // Copies at +10, +20, +30; last one reaches x = 30 + 1.
+        let bb = pattern.mesh.bbox();
+        assert!((bb.max.x - 31.0).abs() < 1e-6, "bbox {:?}", bb);
+        assert!((bb.min.x - 9.0).abs() < 1e-6, "bbox {:?}", bb);
+        assert!(pattern.mesh.is_closed());
+    }
+
+    #[test]
+    fn linear_pattern_symmetric_spreads_both_sides() {
+        let mut doc = Document::new("linpat-sym");
+        let seed = add_box(
+            &mut doc,
+            "seed",
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 2.0, 2.0),
+        );
+        doc.add_feature(Feature::LinearPattern(crate::LinearPatternParams {
+            source: seed,
+            direction: Vector3::y(),
+            count: 5,
+            spacing: 4.0,
+            symmetric: true,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let pattern = result.bodies.last().unwrap();
+        // 4 copies (±2·spacing, ±spacing) around the seed.
+        let v = pattern.mesh.volume_signed();
+        assert!((v - 4.0 * 8.0).abs() < 1e-6, "volume {v}");
+        let bb = pattern.mesh.bbox();
+        assert!((bb.max.y - 9.0).abs() < 1e-6, "bbox {:?}", bb);
+        assert!((bb.min.y + 9.0).abs() < 1e-6, "bbox {:?}", bb);
+    }
+
+    #[test]
+    fn linear_pattern_cuts_target() {
+        // Pattern of punch bodies cut from a plate.
+        let mut doc = Document::new("linpat-cut");
+        let plate = add_box(
+            &mut doc,
+            "plate",
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(40.0, 10.0, 10.0),
+        );
+        let hole = add_box(
+            &mut doc,
+            "hole",
+            Point3::new(-10.0, 0.0, 0.0),
+            Vector3::new(2.0, 2.0, 12.0),
+        );
+        doc.add_feature(Feature::LinearPattern(crate::LinearPatternParams {
+            source: hole,
+            direction: Vector3::x(),
+            count: 3,
+            spacing: 10.0,
+            symmetric: false,
+            operation: ExtrudeOp::Cut,
+            target: plate,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // Cut target and seed are consumed; only the pattern result remains.
+        assert_eq!(result.bodies.len(), 1);
+        let v = result.bodies[0].mesh.volume_signed();
+        // Instances at x = -10 (seed), 0, +10: three 2×2 through-holes.
+        assert!(
+            (v - (4000.0 - 3.0 * 2.0 * 2.0 * 10.0)).abs() < 1e-6,
+            "volume {v}"
+        );
+        // NOTE: no is_closed() here - BSP cuts leave collinear T-junction
+        // seams (volume-exact, topologically open); tracked as roadmap K-02.
+    }
+
+    #[test]
+    fn circular_pattern_full_circle_volume() {
+        let mut doc = Document::new("circpat");
+        let seed = add_box(
+            &mut doc,
+            "seed",
+            Point3::new(10.0, 0.0, 0.0),
+            Vector3::new(2.0, 2.0, 2.0),
+        );
+        doc.add_feature(Feature::CircularPattern(crate::CircularPatternParams {
+            source: seed,
+            axis_point: Point3::origin(),
+            axis_dir: Vector3::z(),
+            count: 6,
+            angle: std::f64::consts::TAU,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let pattern = result.bodies.last().unwrap();
+        // 5 rotated copies, disjoint from the seed and from each other
+        // (chord distance between centers is 10, box is 2).
+        let v = pattern.mesh.volume_signed();
+        assert!((v - 5.0 * 8.0).abs() < 1e-6, "volume {v}");
+        // Copies at 60°..300° (the seed at 0° is a separate body):
+        // - 180° copy: min.x = -11
+        // - 60°/300° copies: max.x = 11·cos60° + 1·sin60° = 5.5 + √3/2
+        // - 60°/120° copies: max.y = 11·sin60° + 1·cos60°
+        let (c60, s60) = (0.5_f64, 3_f64.sqrt() / 2.0);
+        let bb = pattern.mesh.bbox();
+        assert!((bb.min.x + 11.0).abs() < 1e-6, "bbox {:?}", bb);
+        assert!(
+            (bb.max.x - (11.0 * c60 + s60)).abs() < 1e-6,
+            "bbox {:?}",
+            bb
+        );
+        assert!(
+            (bb.max.y - (11.0 * s60 + c60)).abs() < 1e-6,
+            "bbox {:?}",
+            bb
+        );
+        assert!(
+            (bb.min.y + (11.0 * s60 + c60)).abs() < 1e-6,
+            "bbox {:?}",
+            bb
+        );
+    }
+
+    #[test]
+    fn circular_pattern_partial_span_angle() {
+        let mut doc = Document::new("circpat-partial");
+        let seed = add_box(
+            &mut doc,
+            "seed",
+            Point3::new(10.0, 0.0, 0.0),
+            Vector3::new(2.0, 2.0, 2.0),
+        );
+        doc.add_feature(Feature::CircularPattern(crate::CircularPatternParams {
+            source: seed,
+            axis_point: Point3::new(0.0, 0.0, 5.0),
+            axis_dir: Vector3::new(0.0, 0.0, 1.0),
+            count: 3,
+            angle: std::f64::consts::FRAC_PI_2, // 0, 45, 90 degrees
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // Pattern body = copies at 45° and 90° (seed at 0° is separate).
+        let pattern = result.bodies.last().unwrap();
+        let bb = pattern.mesh.bbox();
+        // 90° copy: center (0, 10), reaches y = 11.
+        assert!((bb.max.y - 11.0).abs() < 1e-6, "bbox {:?}", bb);
+        // Nothing below the X axis (all copies in the first quadrant).
+        assert!(bb.min.y > -1e-6, "bbox {:?}", bb);
+    }
+
+    #[test]
+    fn pattern_validation_errors() {
+        let mut doc = Document::new("bad");
+        let seed = add_box(
+            &mut doc,
+            "seed",
+            Point3::origin(),
+            Vector3::new(2.0, 2.0, 2.0),
+        );
+        doc.add_feature(Feature::LinearPattern(crate::LinearPatternParams {
+            source: seed,
+            direction: Vector3::new(0.0, 0.0, 0.0), // degenerate
+            count: 3,
+            spacing: 5.0,
+            symmetric: false,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        }))
+        .unwrap();
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(
+            result.errors.values().any(|e| e.contains("degenerate")),
+            "{:?}",
+            result.errors
+        );
+
+        let mut doc2 = Document::new("bad2");
+        let seed2 = add_box(
+            &mut doc2,
+            "seed",
+            Point3::origin(),
+            Vector3::new(2.0, 2.0, 2.0),
+        );
+        doc2.add_feature(Feature::Mirror(crate::MirrorParams {
+            source: seed2,
+            plane_point: Point3::origin(),
+            plane_normal: Vector3::new(0.0, 0.0, 0.0), // degenerate
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        }))
+        .unwrap();
+        let mut ev2 = Evaluator::default();
+        let result2 = ev2.evaluate(&mut doc2);
+        assert!(
+            result2.errors.values().any(|e| e.contains("degenerate")),
+            "{:?}",
+            result2.errors
+        );
+    }
+
+    #[test]
+    fn extrude_cut_consumes_target() {
+        let mut doc = Document::new("cut");
+        let plate = add_box(
+            &mut doc,
+            "plate",
+            Point3::origin(),
+            Vector3::new(10.0, 10.0, 10.0),
+        );
+        let mut sketch = Sketch::new(
+            SketchId::new(1),
+            "s",
+            SketchPlane::Datum {
+                datum: DatumPlane::XY,
+            },
+        );
+        sketch.add_rectangle(
+            forge_core::Point2::new(-1.0, -1.0),
+            forge_core::Point2::new(1.0, 1.0),
+        );
+        let sketch_id = doc.add_feature(Feature::Sketch(sketch)).unwrap();
+        doc.add_feature(Feature::Extrude(ExtrudeParams {
+            profile: sketch_id,
+            distance: 20.0,
+            direction: forge_geometry::ExtrudeDirection::Symmetric,
+            operation: ExtrudeOp::Cut,
+            target: plate,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // The raw plate is hidden; only the drilled result is visible.
+        assert_eq!(result.bodies.len(), 1);
+        let v = result.bodies[0].mesh.volume_signed();
+        // 2×2 square hole through the 10 mm plate.
+        assert!((v - 960.0).abs() < 1e-6, "volume {v}");
+    }
+
     #[test]
     fn sketch_extrude_pipeline() {
         let mut doc = Document::new("pipe");
-        let mut sketch = Sketch::new(SketchId::new(1), "s1", SketchPlane::Datum {
-            datum: DatumPlane::XY,
-        });
-        sketch.add_rectangle(
-            Point2::new(-10.0, -10.0),
-            Point2::new(10.0, 10.0),
+        let mut sketch = Sketch::new(
+            SketchId::new(1),
+            "s1",
+            SketchPlane::Datum {
+                datum: DatumPlane::XY,
+            },
         );
+        sketch.add_rectangle(Point2::new(-10.0, -10.0), Point2::new(10.0, 10.0));
         let sketch_id = doc.add_feature(Feature::Sketch(sketch)).unwrap();
         let extrude_id = doc
             .add_feature(Feature::Extrude(ExtrudeParams {

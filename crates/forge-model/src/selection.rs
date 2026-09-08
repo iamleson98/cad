@@ -105,7 +105,8 @@ impl Selection {
 
     /// The first selected body translated into its source feature id.
     pub fn primary_feature(&self) -> Option<forge_core::FeatureId> {
-        self.primary_body().map(|b| forge_core::FeatureId::new(b.raw()))
+        self.primary_body()
+            .map(|b| forge_core::FeatureId::new(b.raw()))
     }
 
     /// `true` when exactly one planar face is selected (used to suggest

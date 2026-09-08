@@ -125,6 +125,59 @@ pub struct BooleanFeature {
     pub operands: Vec<FeatureId>,
 }
 
+/// Parameters of a linear pattern feature (F-02).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearPatternParams {
+    /// Seed body feature whose instances are patterned.
+    pub source: FeatureId,
+    /// Pattern direction (world space, normalized during evaluation).
+    pub direction: Vector3,
+    /// Total instance count, including the seed at offset 0.
+    pub count: usize,
+    /// Spacing between consecutive instances (mm).
+    pub spacing: f64,
+    /// Distribute instances symmetrically on both sides of the seed.
+    pub symmetric: bool,
+    /// Interaction with existing bodies.
+    pub operation: ExtrudeOp,
+    /// Target body feature for Join/Cut (ignored for New).
+    pub target: FeatureId,
+}
+
+/// Parameters of a circular pattern feature (F-03).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircularPatternParams {
+    /// Seed body feature whose instances are patterned.
+    pub source: FeatureId,
+    /// A point on the rotation axis (world space).
+    pub axis_point: Point3,
+    /// Rotation axis direction (world space, normalized during evaluation).
+    pub axis_dir: Vector3,
+    /// Total instance count, including the seed at angle 0.
+    pub count: usize,
+    /// Total angular span of the pattern (radians). `TAU` = full circle.
+    pub angle: f64,
+    /// Interaction with existing bodies.
+    pub operation: ExtrudeOp,
+    /// Target body feature for Join/Cut (ignored for New).
+    pub target: FeatureId,
+}
+
+/// Parameters of a mirror feature (F-01).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MirrorParams {
+    /// Source body feature to mirror.
+    pub source: FeatureId,
+    /// A point on the mirror plane (world space).
+    pub plane_point: Point3,
+    /// Mirror plane normal (world space, normalized during evaluation).
+    pub plane_normal: Vector3,
+    /// Interaction with existing bodies.
+    pub operation: ExtrudeOp,
+    /// Target body feature for Join/Cut (ignored for New).
+    pub target: FeatureId,
+}
+
 /// A node of the parametric feature tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Feature {
@@ -151,6 +204,12 @@ pub enum Feature {
         /// Euler angles (XYZ, radians).
         rotation: Vector3,
     },
+    /// Replicate a body along a direction (F-02).
+    LinearPattern(LinearPatternParams),
+    /// Replicate a body around an axis (F-03).
+    CircularPattern(CircularPatternParams),
+    /// Mirror a body across a plane (F-01).
+    Mirror(MirrorParams),
 }
 
 impl Feature {
@@ -167,6 +226,13 @@ impl Feature {
             Feature::Primitive(p) => format!("Primitive: {}", p.kind),
             Feature::Boolean(b) => format!("Boolean: {}", b.op),
             Feature::TransformBody { .. } => "Transform".into(),
+            Feature::LinearPattern(p) => {
+                format!("Linear Pattern x{}", p.count.max(1))
+            }
+            Feature::CircularPattern(p) => {
+                format!("Circular Pattern x{}", p.count.max(1))
+            }
+            Feature::Mirror(_) => "Mirror".into(),
         }
     }
 
@@ -193,6 +259,27 @@ impl Feature {
             Feature::Primitive(_) => Vec::new(),
             Feature::Boolean(b) => b.operands.clone(),
             Feature::TransformBody { source, .. } => vec![*source],
+            Feature::LinearPattern(p) => {
+                let mut d = vec![p.source];
+                if p.operation != ExtrudeOp::New && !p.target.is_none() {
+                    d.push(p.target);
+                }
+                d
+            }
+            Feature::CircularPattern(p) => {
+                let mut d = vec![p.source];
+                if p.operation != ExtrudeOp::New && !p.target.is_none() {
+                    d.push(p.target);
+                }
+                d
+            }
+            Feature::Mirror(p) => {
+                let mut d = vec![p.source];
+                if p.operation != ExtrudeOp::New && !p.target.is_none() {
+                    d.push(p.target);
+                }
+                d
+            }
         }
     }
 }

@@ -46,25 +46,30 @@ pub use triangulate::{triangulate_with_holes, Triangulation};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_core::{Point2, Point3, Plane, TessellationConfig, Vector3};
+    use forge_core::{Plane, Point2, Point3, TessellationConfig, Vector3};
 
     /// End-to-end kernel pipeline: profile -> extrude -> boolean cut.
     #[test]
     fn plate_with_hole_pipeline() {
         let cfg = TessellationConfig::default();
-        let mut outer = Vec::new();
         // 60 x 40 rectangle.
-        outer.push(Point2::new(-30.0, -20.0));
-        outer.push(Point2::new(30.0, -20.0));
-        outer.push(Point2::new(30.0, 20.0));
-        outer.push(Point2::new(-30.0, 20.0));
+        let outer = vec![
+            Point2::new(-30.0, -20.0),
+            Point2::new(30.0, -20.0),
+            Point2::new(30.0, 20.0),
+            Point2::new(-30.0, 20.0),
+        ];
         let hole = triangulate::circle_points(Point2::origin(), 8.0, 64);
         let profile = Profile2D::new(outer, vec![hole]).expect("valid profile");
 
-        let plate = extrude(&profile, &Plane::default(), &ExtrudeParams {
-            distance: 10.0,
-            direction: ExtrudeDirection::Symmetric,
-        })
+        let plate = extrude(
+            &profile,
+            &Plane::default(),
+            &ExtrudeParams {
+                distance: 10.0,
+                direction: ExtrudeDirection::Symmetric,
+            },
+        )
         .expect("extrude");
 
         assert!(plate.is_closed());
@@ -72,15 +77,13 @@ mod tests {
         let hole_area = 0.5 * 64.0 * 64.0 * (std::f64::consts::TAU / 64.0).sin();
         let expected = (2400.0 - hole_area) * 10.0;
         let got = plate.volume().expect("closed");
-        assert!((got - expected).abs() / expected < 1e-9, "{got} vs {expected}");
+        assert!(
+            (got - expected).abs() / expected < 1e-9,
+            "{got} vs {expected}"
+        );
 
         // Drill a second hole with a boolean cylinder cut.
-        let drill = primitives::cylinder(
-            Point3::new(15.0, 0.0, -20.0),
-            5.0,
-            40.0,
-            &cfg,
-        );
+        let drill = primitives::cylinder(Point3::new(15.0, 0.0, -20.0), 5.0, 40.0, &cfg);
         let result = boolean(&plate, &drill, CsgOp::Difference).expect("cut");
         let expected2 = expected - std::f64::consts::PI * 25.0 * 10.0;
         let got2 = result.volume_signed();
@@ -92,10 +95,8 @@ mod tests {
 
     #[test]
     fn transformed_mesh_volume_is_preserved() {
-        let m = primitives::box_from_center_extents(
-            Point3::origin(),
-            Vector3::new(10.0, 10.0, 10.0),
-        );
+        let m =
+            primitives::box_from_center_extents(Point3::origin(), Vector3::new(10.0, 10.0, 10.0));
         let iso = forge_core::Transform::from_parts(
             nalgebra::Translation3::new(100.0, -50.0, 7.0),
             nalgebra::UnitQuaternion::from_euler_angles(30.0_f64.to_radians(), 45.0, 60.0),
