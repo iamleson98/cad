@@ -118,6 +118,9 @@ pub struct DimBinding {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Document {
     /// Native format version (bumped on breaking schema changes).
+    /// Absent in pre-versioning legacy files → 0, which the loader
+    /// migrates to current (I-06).
+    #[serde(default)]
     pub format_version: u32,
     /// Document name (also used as default file name).
     pub name: String,

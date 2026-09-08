@@ -16,11 +16,13 @@
 //! render pass).
 
 pub mod camera;
+pub mod cull;
 pub mod renderer;
 pub mod scene;
 pub mod shaders;
 
 pub use camera::{Camera, CameraUniform};
+pub use cull::Frustum;
 pub use renderer::{DisplayMode, PickResult, RenderOptions, Renderer, SectionPlane};
 pub use scene::{BodyStyle, Scene, SceneBody};
 

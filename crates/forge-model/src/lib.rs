@@ -19,6 +19,7 @@ pub mod error;
 pub mod evaluate;
 pub mod expr;
 pub mod feature;
+pub mod migrate;
 pub mod selection;
 pub mod tree;
 
@@ -31,6 +32,7 @@ pub use feature::{
     HoleKind, HoleParams, ImportedMeshParams, LinearPatternParams, LoftParams, MirrorParams,
     PrimitiveKind, PrimitiveParams, RevolveParams, SweepParams,
 };
+pub use migrate::migrate_document;
 pub use selection::{Selection, SelectionItem};
 pub use tree::{FeatureNode, FeatureTree};
 

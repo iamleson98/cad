@@ -17,7 +17,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 - [x] **T-01 CI pipeline** `(S)` `P0`
       GitHub Actions: `cargo fmt --check`, `cargo clippy --workspace -- -D
       warnings`, `cargo test --workspace`, cached builds, on every push/PR.
-      *Done: `.github/workflows/ci.yml`.*
+      *Done: `.github/workflows/ci.yml` — now a full 3-OS matrix
+      (ubuntu/windows/macos) on every push, with fmt as a fast separate
+      gate job, per-OS rust-cache, fail-fast disabled, and a weekly cron
+      to keep caches warm. First 3-platform run green.*
 
 - [x] **F-01 Mirror feature** `(S)` `P0`
       Reflect a body across a datum plane (point + normal); winding order
@@ -79,8 +82,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       geometry, handles chain-corner intersections).
 - [ ] **S-07 Trim / extend** `(M)` `P2`
       Trim-to-intersection on line/arc chains; extend to head.
-- [ ] **S-08 Sketch mirror tool** `(S)` `P2`
+- [x] **S-08 Sketch mirror tool** `(S)` `P2`
       Mirror selected entities about a line, creating symmetric constraints.
+      *Done: `Sketch::mirror_entities` — reflection about any line entity
+      (point/line/circle/arc/spline; arc angle pairs map as θ → 2φ−θ with
+      start/end roles swapped). Constraint sets are exactly rank-complete
+      per kind (point 2 eq, line 4, circle 3 + EqualRadius, arc 5 with
+      role-swapped Symmetric + EqualRadius) — no redundancy, DOF balance
+      unchanged. UI: inspector mirror section (combo to pick the symmetry
+      line, one-click mirror of the other entities, solve + undo-able
+      edit) + palette command. Tests: reflection exactness, circle/arc
+      geometry + role swap, perturb-and-resolve restores symmetry, bad
+      input rejection.*
 - [x] **F-04 Hole feature (compound)** `(M)` `P1`
       Standard holes: simple / counterbore / countersink, diameter, depth,
       drill-point angle, placed at sketch points; evaluated as boolean cut
@@ -239,8 +252,17 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       2D sketch exchange (ezdxf-rs or hand-rolled DXF subset), profiles
       become constrained entities.
 - [ ] **I-05 glTF import + USD glTF-level parity** `(M)` `P3`
-- [ ] **I-06 Native format versioning/migration** `(S)` `P2`
+- [x] **I-06 Native format versioning/migration** `(S)` `P2`
       RON schema version field + migration tests (forward one version).
+      *Done: `format_version` now serde-defaults to 0 (pre-versioning
+      legacy files deserialize); `forge_model::migrate_document` walks a
+      stepwise v0→v1→… pipeline (v0→v1 = allocator hygiene: reserve the
+      id counter above every tree feature id so post-load additions
+      never collide). `forge_io::load_document` runs migrations after the
+      newer-version rejection check. Tests: allocator-collision repair,
+      idempotence, unknown-version path, hand-written legacy v0 fixture
+      (missing field) loads + migrates + re-saves at current, future
+      version rejected. Contributor rules documented in `migrate.rs`.*
 
 ## Wave 5 — Assembly & drawing subsystems
 
@@ -278,8 +300,17 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       Per-feature mesh caching with invalidation only on param change
       (already fingerprinted) + LOD per zoom; keeps 10k-feature docs at
       60 fps.
-- [ ] **K-05 Frustum culling + draw batching** `(S)` `P2`
+- [x] **K-05 Frustum culling + draw batching** `(S)` `P2`
       Per-body AABB culling on CPU; instance-buffer rendering for patterns.
+      *Done: `forge_render::cull` — Gribb–Hartmann plane extraction from
+      the view-projection (normalized) + positive-vertex AABB test, with
+      degenerate bounds always visible. Applied to every body pass:
+      opaque, feature-edge lines, transparency (pre-sort) and GPU picking
+      (a culled body cannot be picked). Tests: identity-matrix ground
+      truth, behind-eye / beyond-far / far-off-axis culling, degenerate
+      AABBs. Instance batching is moot for patterns: they evaluate into
+      single merged meshes (one draw call already); revisit with K-04
+      LOD instancing.*
 - [ ] **K-06 B-Rep kernel integration (truck)** `(L→Phase 4)` `P1`
       Exact-geometry fillet/chamfer/shell/offset on B-Rep with mesh output
       for rendering; feature tree maps 1:1 to kernel operations. The
@@ -306,8 +337,17 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 - [ ] **PR-06 User docs** `(M)` `P2`
       mdBook guide: quickstart, every tool, troubleshooting; in-app help
       (F1) reusing the same source.
-- [ ] **PR-07 Fuzz + property CI job** `(S)` `P2`
+- [x] **PR-07 Fuzz + property CI job** `(S)` `P2`
       cargo-fuzz on RON parser, boolean corpus, solver random sketches.
+      *Done (boolean corpus): `forge-geometry/tests/fuzz_csg.rs` — 48
+      deterministic random primitive pairs × 3 ops per run, asserting
+      structural sanity (indices, NaN), volume monotonicity per op,
+      outward orientation, and error discipline (only empty results may
+      fail). Runs in every `cargo test` on all 3 platforms (~2 s).
+      `FORGE_FUZZ_SEED` env re-seeds; verbose mode tracks the
+      T-junction closedness statistic (38/105 strictly closed today —
+      K-02's backlog). Remaining: cargo-fuzz on the RON parser and
+      random-sketch solver corpus (fold into K-01).*
 
 ---
 

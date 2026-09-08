@@ -16,6 +16,7 @@
 //!    mapping, background. Recorded by the caller into the UI render pass.
 
 use crate::camera::{Camera, CameraUniform};
+use crate::cull::Frustum;
 use crate::scene::{BodyStyle, Scene};
 use crate::shaders;
 use forge_core::BodyId;
@@ -106,6 +107,9 @@ struct GpuBody {
     style: BodyStyle,
     /// Centroid (world) for transparency sorting.
     centroid: forge_core::Point3,
+    /// World-space AABB for frustum culling (K-05).
+    aabb_min: [f64; 3],
+    aabb_max: [f64; 3],
     pick_id: u32,
 }
 
@@ -763,6 +767,9 @@ impl Renderer {
                 }],
             });
 
+            // World-space AABB for the culling test (K-05). Degenerate
+            // boxes (empty mesh) test as always-visible.
+            let bb = mesh.bbox();
             self.bodies.push(GpuBody {
                 vertex_buf,
                 index_buf,
@@ -773,6 +780,8 @@ impl Renderer {
                 line_bg,
                 style: body.style,
                 centroid: mesh.centroid(),
+                aabb_min: [bb.min.x, bb.min.y, bb.min.z],
+                aabb_max: [bb.max.x, bb.max.y, bb.max.z],
                 pick_id: body.id.raw() as u32,
             });
         }
@@ -879,6 +888,11 @@ impl Renderer {
         self.ensure_targets(size);
         let aspect = size.0 as f64 / size.1 as f64;
 
+        // K-05: per-body AABB frustum culling, computed once per frame and
+        // applied to every body pass (opaque, lines, transparency, pick).
+        let frustum = Frustum::from_view_proj(camera.view_proj(aspect));
+        let visible = |b: &GpuBody| frustum.intersects_aabb(&b.aabb_min, &b.aabb_max);
+
         // Camera uniform.
         let mut cam_uniform = camera.uniform(aspect, (size.0 as f64, size.1 as f64));
         // Section-view clip plane + display mode flags (W-02/W-05).
@@ -984,6 +998,9 @@ impl Renderer {
                 if xray || body.style.transparent || body.style.color[3] < 1.0 {
                     continue;
                 }
+                if !visible(body) {
+                    continue; // K-05: entirely off-screen
+                }
                 rpass.set_bind_group(1, &body.model_bg, &[]);
                 rpass.set_index_buffer(body.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                 rpass.set_vertex_buffer(0, body.vertex_buf.slice(..));
@@ -1026,6 +1043,9 @@ impl Renderer {
                     if body.line_count == 0 {
                         continue;
                     }
+                    if !visible(body) {
+                        continue; // K-05: entirely off-screen
+                    }
                     rpass.set_bind_group(1, &body.line_bg, &[]);
                     rpass.set_vertex_buffer(0, body.line_buf.slice(..));
                     rpass.draw(0..body.line_count, 0..1);
@@ -1046,7 +1066,7 @@ impl Renderer {
             let mut sorted: Vec<&GpuBody> = self
                 .bodies
                 .iter()
-                .filter(|b| xray || b.style.transparent || b.style.color[3] < 1.0)
+                .filter(|b| (xray || b.style.transparent || b.style.color[3] < 1.0) && visible(b))
                 .collect();
             sorted.sort_by_key(|b| {
                 let d = (b.centroid - eye).norm();
@@ -1187,7 +1207,14 @@ impl Renderer {
             });
             rpass.set_pipeline(&self.pick_pipeline);
             rpass.set_bind_group(0, &self.camera_bg, &[]);
+            // Same culling rule as the visible passes: a body that cannot
+            // appear on screen cannot be picked at this pixel either.
+            let pick_frustum =
+                Frustum::from_view_proj(camera.view_proj(size.0 as f64 / size.1 as f64));
             for body in &self.bodies {
+                if !pick_frustum.intersects_aabb(&body.aabb_min, &body.aabb_max) {
+                    continue;
+                }
                 rpass.set_bind_group(1, &body.model_bg, &[]);
                 rpass.set_index_buffer(body.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                 rpass.set_vertex_buffer(0, body.vertex_buf.slice(..));

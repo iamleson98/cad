@@ -284,6 +284,11 @@ pub fn entries() -> Vec<PaletteEntry> {
             keywords: "sketch face planar profile draw",
             action: SketchOnSelectedFace,
         },
+        PaletteEntry {
+            label: "Mirror selected sketch entities (about first line)",
+            keywords: "sketch mirror symmetric reflect copy s08",
+            action: MirrorSelectedSketch,
+        },
     ]
 }
 
@@ -351,6 +356,8 @@ pub enum PaletteAction {
     PickVertices,
     /// W-04: create a sketch on the selected planar face.
     SketchOnSelectedFace,
+    /// S-08: mirror the selected sketch's entities about its first line.
+    MirrorSelectedSketch,
 }
 
 /// Simple subsequence fuzzy match score; `usize::MAX` means no match.
@@ -510,6 +517,7 @@ impl PaletteAction {
                 app.set_status("Picking vertices — click near a corner");
             }
             SketchOnSelectedFace => app.add_sketch_on_selected_face(),
+            MirrorSelectedSketch => app.mirror_selected_sketch(),
 
             ToggleSection => {
                 let enabled = app.render_options.section.is_some();
@@ -864,6 +872,68 @@ impl ForgeApp {
                 }
                 self.set_status("Sketch created on the selected face — extrude or cut from it");
                 self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// S-08: mirror the selected sketch's entities about its first line
+    /// entity. The inspector offers per-line choice; this is the quick
+    /// palette path.
+    pub(crate) fn mirror_selected_sketch(&mut self) {
+        let Some(id) = self.selection.primary_feature() else {
+            self.set_status("Select a sketch feature first");
+            return;
+        };
+        let Some(Feature::Sketch(sketch)) = self.doc.feature(id).cloned() else {
+            self.set_status("Selected feature is not a sketch");
+            return;
+        };
+        let Some(mirror) = sketch
+            .entities
+            .values()
+            .find(|e| matches!(e, forge_sketch::SketchEntity::Line { .. }))
+            .map(|e| e.id())
+        else {
+            self.set_status("Sketch has no line to mirror across");
+            return;
+        };
+        let others: Vec<forge_core::EntityId> = sketch
+            .entities
+            .keys()
+            .filter(|&&e| e != mirror)
+            .copied()
+            .collect();
+        let mut target = sketch.clone();
+        match target.mirror_entities(&others, mirror) {
+            Ok(created) => {
+                let report = target.solve().ok();
+                if let Some(r) = &report {
+                    self.last_sketch_report = Some(r.clone());
+                }
+                if self
+                    .doc
+                    .edit_feature(id, Feature::Sketch(target.clone()))
+                    .is_ok()
+                {
+                    let _ = self.commands.execute(
+                        Command::EditFeature {
+                            id,
+                            before: Box::new(Feature::Sketch(sketch)),
+                            after: Box::new(Feature::Sketch(target)),
+                        },
+                        &mut self.doc,
+                    );
+                    self.request_evaluation();
+                    self.set_status(format!(
+                        "Mirrored {} entities about line {mirror}{}",
+                        created.len(),
+                        report
+                            .filter(|r| !r.is_solved())
+                            .map(|r| format!(" (solver: {})", r.status))
+                            .unwrap_or_default()
+                    ));
+                }
             }
             Err(e) => self.set_status(format!("{e}")),
         }

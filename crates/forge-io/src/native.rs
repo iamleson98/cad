@@ -17,10 +17,11 @@ pub fn save_document(path: &Path, doc: &Document) -> Result<()> {
     Ok(())
 }
 
-/// Load a document from RON, validating the format version.
+/// Load a document from RON, validating the format version and migrating
+/// older files to the current schema (I-06).
 pub fn load_document(path: &Path) -> Result<Document> {
     let data = std::fs::read_to_string(path)?;
-    let doc: Document =
+    let mut doc: Document =
         ron::from_str(&data).map_err(|e| IoError::Serde(format!("ron decode: {e}")))?;
     if doc.format_version > forge_core::NATIVE_FORMAT_VERSION {
         return Err(IoError::Unsupported(format!(
@@ -29,6 +30,8 @@ pub fn load_document(path: &Path) -> Result<Document> {
             forge_core::NATIVE_FORMAT_VERSION
         )));
     }
+    // Walk the stepwise migration pipeline up to the current version.
+    forge_model::migrate_document(&mut doc)?;
     Ok(doc)
 }
 
@@ -84,6 +87,65 @@ mod tests {
         let result = ev.evaluate(&mut loaded.clone());
         assert!(result.errors.is_empty(), "{:?}", result.errors);
         assert_eq!(result.bodies.len(), 2);
+        // Current-version files stay current (no spurious migration).
+        assert_eq!(loaded.format_version, forge_core::NATIVE_FORMAT_VERSION);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// I-06: a hand-written v0 (pre-versioning) document — no
+    /// `format_version` field, no `bindings`, no `next_param` — loads,
+    /// migrates, and re-saves at the current version.
+    #[test]
+    fn legacy_v0_document_loads_and_migrates() {
+        let legacy_ron = r#"
+(
+    name: "legacy doc",
+    units: Millimeter,
+    tree: (nodes: {}, order: []),
+    params: {},
+    allocator: (next: 1),
+    modified: false,
+)
+"#;
+        let dir = std::env::temp_dir();
+        let path = dir.join("forgecad_test_legacy_v0.forgecad");
+        std::fs::write(&path, legacy_ron).unwrap();
+        let doc = load_document(&path).unwrap();
+        assert_eq!(doc.name, "legacy doc");
+        assert_eq!(
+            doc.format_version,
+            forge_core::NATIVE_FORMAT_VERSION,
+            "migration must stamp the current version"
+        );
+        assert!(doc.bindings.is_empty());
+        // Re-saving writes the current version explicitly.
+        save_document(&path, &doc).unwrap();
+        let reloaded = load_document(&path).unwrap();
+        assert_eq!(reloaded.format_version, forge_core::NATIVE_FORMAT_VERSION);
+        assert_eq!(reloaded.name, "legacy doc");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// I-06: files from a newer ForgeCAD are rejected with a clear error
+    /// instead of silently misreading the schema.
+    #[test]
+    fn newer_format_version_is_rejected() {
+        let future_ron = r#"
+(
+    format_version: 9999,
+    name: "from the future",
+    units: Millimeter,
+    tree: (nodes: {}, order: []),
+    params: {},
+    allocator: (next: 1),
+    modified: false,
+)
+"#;
+        let dir = std::env::temp_dir();
+        let path = dir.join("forgecad_test_future.forgecad");
+        std::fs::write(&path, future_ron).unwrap();
+        let err = load_document(&path).expect_err("must be rejected");
+        assert!(err.to_string().contains("newer"), "{err}");
         std::fs::remove_file(&path).ok();
     }
 }

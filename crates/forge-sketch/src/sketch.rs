@@ -310,6 +310,158 @@ impl Sketch {
         Ok(lines)
     }
 
+    /// Mirror the given entities about a line entity, creating mirrored
+    /// copies bound to their originals by symmetry constraints (S-08).
+    ///
+    /// The copies are fully parametric: dragging an original drags its
+    /// mirror image. Each pair gets an exactly rank-complete constraint
+    /// set (no redundancy): a point gets one `Symmetric(Start,Start)`;
+    /// a line gets `Symmetric(Start,Start)` + `Symmetric(End,End)`;
+    /// a circle gets `Symmetric(Center,Center)` + `EqualRadius`; an arc
+    /// gets `Symmetric(Start,End)` + `Symmetric(End,Start)` +
+    /// `EqualRadius` (roles swap because the mirror image of an arc's
+    /// start point is the copy's end point); a spline is mirrored
+    /// geometrically only, since the solver has no spline-DOF point
+    /// constraints yet.
+    ///
+    /// Returns the ids of the created mirror entities in input order,
+    /// skipping the mirror line itself (it is never self-mirrored).
+    pub fn mirror_entities(
+        &mut self,
+        entities: &[EntityId],
+        mirror: EntityId,
+    ) -> Result<Vec<EntityId>> {
+        let (m0, m1) = match self.entities.get(&mirror) {
+            Some(SketchEntity::Line { start, end, .. }) => (*start, *end),
+            _ => {
+                return Err(crate::SketchError::Invalid(
+                    "mirror entity must be a line".into(),
+                ))
+            }
+        };
+        let dir = m1 - m0;
+        if dir.norm() < 1e-12 {
+            return Err(crate::SketchError::Invalid(
+                "mirror line is degenerate".into(),
+            ));
+        }
+        let dir = dir.normalize();
+        // Reflection across the line through m0 with direction `dir`:
+        // p' = m0 + 2*(d.dir)*dir - d,  d = p - m0.
+        let reflect = |p: &Point2| -> Point2 {
+            let d = *p - m0;
+            m0 + dir * (2.0 * d.dot(&dir)) - d
+        };
+        // Direction angles map as θ -> 2φ − θ under the reflection.
+        let phi = dir.y.atan2(dir.x);
+
+        let mut created = Vec::with_capacity(entities.len());
+        for &id in entities {
+            if id == mirror {
+                continue;
+            }
+            let Some(entity) = self.entities.get(&id).cloned() else {
+                return Err(crate::SketchError::Invalid(format!("unknown entity {id}")));
+            };
+            let new_id = self.next_id();
+            let mirrored = match &entity {
+                SketchEntity::Point { p, .. } => SketchEntity::Point {
+                    id: new_id,
+                    p: reflect(p),
+                },
+                SketchEntity::Line { start, end, .. } => SketchEntity::Line {
+                    id: new_id,
+                    start: reflect(start),
+                    end: reflect(end),
+                },
+                SketchEntity::Circle { center, radius, .. } => SketchEntity::Circle {
+                    id: new_id,
+                    center: reflect(center),
+                    radius: *radius,
+                },
+                SketchEntity::Arc {
+                    center,
+                    radius,
+                    start_angle,
+                    end_angle,
+                    ..
+                } => {
+                    // The reflection reverses orientation: the CCW arc
+                    // [a0, a1] becomes the CCW arc [2φ−a1, 2φ−a0].
+                    SketchEntity::Arc {
+                        id: new_id,
+                        center: reflect(center),
+                        radius: *radius,
+                        start_angle: 2.0 * phi - end_angle,
+                        end_angle: 2.0 * phi - start_angle,
+                    }
+                }
+                SketchEntity::Spline { control, .. } => SketchEntity::Spline {
+                    id: new_id,
+                    control: control.iter().map(&reflect).collect(),
+                },
+            };
+            use Constraint as C;
+            match (&entity, &mirrored) {
+                (SketchEntity::Point { .. }, SketchEntity::Point { .. }) => {
+                    self.constraints.push(C::Symmetric {
+                        a: id,
+                        a_point: PointRole::Start,
+                        b: new_id,
+                        b_point: PointRole::Start,
+                        line: mirror,
+                    });
+                }
+                (SketchEntity::Line { .. }, SketchEntity::Line { .. }) => {
+                    for (a_point, b_point) in [
+                        (PointRole::Start, PointRole::Start),
+                        (PointRole::End, PointRole::End),
+                    ] {
+                        self.constraints.push(C::Symmetric {
+                            a: id,
+                            a_point,
+                            b: new_id,
+                            b_point,
+                            line: mirror,
+                        });
+                    }
+                }
+                (SketchEntity::Circle { .. }, SketchEntity::Circle { .. }) => {
+                    self.constraints.push(C::Symmetric {
+                        a: id,
+                        a_point: PointRole::Center,
+                        b: new_id,
+                        b_point: PointRole::Center,
+                        line: mirror,
+                    });
+                    self.constraints.push(C::EqualRadius { a: id, b: new_id });
+                }
+                (SketchEntity::Arc { .. }, SketchEntity::Arc { .. }) => {
+                    self.constraints.push(C::Symmetric {
+                        a: id,
+                        a_point: PointRole::Start,
+                        b: new_id,
+                        b_point: PointRole::End,
+                        line: mirror,
+                    });
+                    self.constraints.push(C::Symmetric {
+                        a: id,
+                        a_point: PointRole::End,
+                        b: new_id,
+                        b_point: PointRole::Start,
+                        line: mirror,
+                    });
+                    self.constraints.push(C::EqualRadius { a: id, b: new_id });
+                }
+                (SketchEntity::Spline { .. }, SketchEntity::Spline { .. }) => {}
+                _ => unreachable!("mirror preserves the entity kind"),
+            }
+            self.entities.insert(new_id, mirrored);
+            created.push(new_id);
+        }
+        Ok(created)
+    }
+
     /// Add a constraint; returns its index.
     pub fn add_constraint(&mut self, c: Constraint) -> usize {
         self.constraints.push(c);
@@ -1046,5 +1198,149 @@ mod tests {
             .unwrap();
         assert_abs_diff_eq!(pp.coords.norm(), 6.0, epsilon = 1e-6);
         assert_abs_diff_eq!((pp - Point2::new(12.0, 0.0)).norm(), 6.6, epsilon = 1e-6);
+    }
+
+    // ---- S-08: sketch mirror tool ------------------------------------
+
+    /// A y-axis mirror line and a seed segment on its right.
+    fn mirror_sketch() -> (Sketch, EntityId, EntityId) {
+        let mut s = Sketch::new(SketchId::new(1), "mirror", plane());
+        let axis = s.add_line(Point2::new(0.0, -20.0), Point2::new(0.0, 20.0));
+        let seg = s.add_line(Point2::new(2.0, 1.0), Point2::new(6.0, 3.0));
+        (s, axis, seg)
+    }
+
+    #[test]
+    fn mirror_reflects_geometry() {
+        let (mut s, axis, seg) = mirror_sketch();
+        let copies = s.mirror_entities(&[seg], axis).expect("mirror");
+        assert_eq!(copies.len(), 1);
+        let m = s.entities.get(&copies[0]).unwrap();
+        match m {
+            SketchEntity::Line { start, end, .. } => {
+                assert_abs_diff_eq!(start.x, -2.0, epsilon = 1e-9);
+                assert_abs_diff_eq!(start.y, 1.0, epsilon = 1e-9);
+                assert_abs_diff_eq!(end.x, -6.0, epsilon = 1e-9);
+                assert_abs_diff_eq!(end.y, 3.0, epsilon = 1e-9);
+            }
+            other => panic!("expected mirrored line, got {other:?}"),
+        }
+        // The mirror line itself is skipped when included in the input.
+        let copies2 = s.mirror_entities(&[axis, seg], axis).expect("mirror");
+        assert_eq!(copies2.len(), 1);
+    }
+
+    #[test]
+    fn mirror_circle_and_arc_geometry() {
+        let mut s = Sketch::new(SketchId::new(1), "mc", plane());
+        let axis = s.add_line(Point2::new(0.0, -20.0), Point2::new(0.0, 20.0));
+        let circle = s.add_circle(Point2::new(5.0, 2.0), 3.0);
+        // CCW quarter arc from 0° to 90° around (5, 0).
+        let arc = s.add_arc(Point2::new(5.0, 0.0), 3.0, 0.0, std::f64::consts::FRAC_PI_2);
+        let copies = s.mirror_entities(&[circle, arc], axis).expect("mirror");
+        assert_eq!(copies.len(), 2);
+        match s.entities.get(&copies[0]).unwrap() {
+            SketchEntity::Circle { center, radius, .. } => {
+                assert_abs_diff_eq!(center.x, -5.0, epsilon = 1e-9);
+                assert_abs_diff_eq!(center.y, 2.0, epsilon = 1e-9);
+                assert_abs_diff_eq!(*radius, 3.0, epsilon = 1e-9);
+            }
+            other => panic!("expected mirrored circle, got {other:?}"),
+        }
+        match s.entities.get(&copies[1]).unwrap() {
+            SketchEntity::Arc { center, radius, .. } => {
+                assert_abs_diff_eq!(center.x, -5.0, epsilon = 1e-9);
+                assert_abs_diff_eq!(center.y, 0.0, epsilon = 1e-9);
+                assert_abs_diff_eq!(*radius, 3.0, epsilon = 1e-9);
+            }
+            other => panic!("expected mirrored arc, got {other:?}"),
+        }
+        // Role swap: the original arc's START point (8, 0) reflects to
+        // (-8, 0), which must be the copy's END point.
+        let p_start = s
+            .entities
+            .get(&arc)
+            .unwrap()
+            .point(&PointRole::Start)
+            .unwrap();
+        let p_copy_end = s
+            .entities
+            .get(&copies[1])
+            .unwrap()
+            .point(&PointRole::End)
+            .unwrap();
+        assert_abs_diff_eq!(p_copy_end.x, -p_start.x, epsilon = 1e-9);
+        assert_abs_diff_eq!(p_copy_end.y, p_start.y, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn mirror_constraints_solve_and_restore_symmetry() {
+        let (mut s, axis, seg) = mirror_sketch();
+        let copies = s.mirror_entities(&[seg], axis).expect("mirror");
+        // Pin the mirror axis in place (as the UI would when the user
+        // fixes/anchors the symmetry line): otherwise the solver may
+        // legitimately satisfy symmetry by moving the axis itself.
+        for (point, pos) in [
+            (PointRole::Start, (0.0, -20.0)),
+            (PointRole::End, (0.0, 20.0)),
+        ] {
+            s.add_constraint(Constraint::FixPoint {
+                entity: axis,
+                point,
+                position: pos,
+            });
+        }
+        // 12 dof − 4 symmetric eq − 4 axis anchors = 4 free (the original
+        // segment can still drag; the copy follows): rank-complete.
+        let report = s.solve().expect("solve");
+        assert!(
+            report.is_solved(),
+            "status {:?} residual {}",
+            report.status,
+            report.residual
+        );
+        assert_eq!(report.dof_balance, 4);
+
+        // Perturb the ORIGINAL segment endpoints; the solver must drag
+        // the mirror copy along, restoring exact symmetry.
+        if let SketchEntity::Line { start, end, .. } = s.entities.get_mut(&seg).unwrap() {
+            *start = Point2::new(3.0, -2.0);
+            *end = Point2::new(9.0, 4.0);
+        }
+        let report = s.solve().expect("solve");
+        assert!(report.is_solved(), "re-solve failed");
+        let (pa, pb) = (
+            s.entities
+                .get(&seg)
+                .unwrap()
+                .point(&PointRole::Start)
+                .unwrap(),
+            s.entities
+                .get(&copies[0])
+                .unwrap()
+                .point(&PointRole::Start)
+                .unwrap(),
+        );
+        // Midpoint on the axis (x = 0) and connecting segment ⟂ axis
+        // (horizontal): both endpoints share y.
+        let mid = (pa.coords + pb.coords) * 0.5;
+        assert_abs_diff_eq!(mid.x, 0.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(pa.y, pb.y, epsilon = 1e-6);
+        assert_abs_diff_eq!(pa.x, -pb.x, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn mirror_rejects_bad_input() {
+        let (mut s, axis, _seg) = mirror_sketch();
+        let circle = s.add_circle(Point2::new(5.0, 0.0), 3.0);
+        assert!(s.mirror_entities(&[circle], circle).is_err());
+        // Degenerate mirror line.
+        let degenerate = s.add_line(Point2::new(1.0, 1.0), Point2::new(1.0, 1.0));
+        assert!(s.mirror_entities(&[_seg], degenerate).is_err());
+        // Unknown entity id.
+        let ghost = EntityId::new(9999);
+        assert!(s.mirror_entities(&[ghost], axis).is_err());
+        // Sanity: the good path still works after the failures.
+        assert!(s.mirror_entities(&[_seg], axis).is_ok());
     }
 }

@@ -611,6 +611,93 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
                     Err(e) => app.set_status(format!("{e}")),
                 }
             }
+
+            // S-08: mirror tool — pick a symmetry line, mirror every other
+            // entity across it with rank-complete symmetric constraints.
+            {
+                use forge_sketch::SketchEntity;
+                let lines: Vec<(forge_core::EntityId, String)> = sketch
+                    .entities
+                    .values()
+                    .filter_map(|e| match e {
+                        SketchEntity::Line { id, start, end, .. } => Some((
+                            *id,
+                            format!(
+                                "line {id}  ({:.1},{:.1})–({:.1},{:.1})",
+                                start.x, start.y, end.x, end.y
+                            ),
+                        )),
+                        _ => None,
+                    })
+                    .collect();
+                if lines.is_empty() {
+                    ui.label(egui::RichText::new("Mirror: add a line to mirror across").weak());
+                } else {
+                    ui.separator();
+                    ui.strong("Mirror (S-08)");
+                    // Default to the remembered pick, else the first line.
+                    if app
+                        .mirror_line_pick
+                        .map(|m| !lines.iter().any(|(id, _)| *id == m))
+                        .unwrap_or(true)
+                    {
+                        app.mirror_line_pick = Some(lines[0].0);
+                    }
+                    let mut selected = app.mirror_line_pick.unwrap_or(lines[0].0).raw() as usize;
+                    egui::ComboBox::from_id_salt("mirror-line")
+                        .selected_text(
+                            lines
+                                .iter()
+                                .find(|(id, _)| id.raw() as usize == selected)
+                                .map(|(_, l)| l.as_str())
+                                .unwrap_or("?"),
+                        )
+                        .show_ui(ui, |ui| {
+                            for (lid, label) in &lines {
+                                ui.selectable_value(&mut selected, lid.raw() as usize, label);
+                            }
+                        });
+                    let mirror = forge_core::EntityId::new(selected as u64);
+                    app.mirror_line_pick = Some(mirror);
+                    let others: Vec<forge_core::EntityId> = sketch
+                        .entities
+                        .keys()
+                        .filter(|&&e| e != mirror)
+                        .copied()
+                        .collect();
+                    if ui
+                        .button(format!("Mirror {} entities", others.len()))
+                        .on_hover_text(
+                            "Creates mirrored copies tied to the originals by symmetric \
+                             constraints — drag an original and the copy follows",
+                        )
+                        .clicked()
+                    {
+                        let mut target = sketch.clone();
+                        match target.mirror_entities(&others, mirror) {
+                            Ok(created) => {
+                                let report = target.solve().ok();
+                                if let Some(r) = &report {
+                                    app.last_sketch_report = Some(r.clone());
+                                }
+                                edit(app, Feature::Sketch(target));
+                                app.set_status(format!(
+                                    "Mirrored {} entities{}",
+                                    created.len(),
+                                    report
+                                        .map(|r| if r.is_solved() {
+                                            String::new()
+                                        } else {
+                                            format!(" (solver: {})", r.status)
+                                        })
+                                        .unwrap_or_default()
+                                ));
+                            }
+                            Err(e) => app.set_status(format!("{e}")),
+                        }
+                    }
+                }
+            }
         }
         Feature::Boolean(b) => {
             ui.label(format!("Operation: {}", b.op));

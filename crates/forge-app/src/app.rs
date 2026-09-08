@@ -57,6 +57,9 @@ pub struct ForgeApp {
     /// Last sketch solver report (inspector display).
     pub last_sketch_report: Option<SolveReport>,
 
+    /// S-08: mirror-line entity chosen in the sketch inspector.
+    pub mirror_line_pick: Option<forge_core::EntityId>,
+
     /// Autosave path + timer.
     autosave_path: PathBuf,
     last_autosave: Instant,
@@ -181,6 +184,7 @@ impl ForgeApp {
             measure_label: None,
             measure_bvhs: Vec::new(),
             measure_bvhs_stale: true,
+            mirror_line_pick: None,
             gizmo_mode: GizmoMode::default(),
             gizmo_drag: None,
             gizmo_hover: None,
