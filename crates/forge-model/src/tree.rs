@@ -396,6 +396,7 @@ mod tests {
             direction: forge_geometry::ExtrudeDirection::Positive,
             operation: crate::ExtrudeOp::New,
             target: FeatureId::NONE,
+            draft_angle: 0.0,
         });
         let id2 = FeatureId::new(2);
         tree.insert(id2, ext).unwrap();
@@ -415,6 +416,7 @@ mod tests {
             direction: forge_geometry::ExtrudeDirection::Positive,
             operation: crate::ExtrudeOp::New,
             target: FeatureId::NONE,
+            draft_angle: 0.0,
         });
         assert!(tree.insert(FeatureId::new(1), ext).is_err());
     }
@@ -431,6 +433,7 @@ mod tests {
             direction: forge_geometry::ExtrudeDirection::Positive,
             operation: crate::ExtrudeOp::New,
             target: FeatureId::NONE,
+            draft_angle: 0.0,
         });
         let id2 = FeatureId::new(2);
         tree.insert(id2, ext).unwrap();

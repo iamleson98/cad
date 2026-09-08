@@ -543,6 +543,19 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 newp.distance = distance;
                 edit(app, Feature::Extrude(newp));
             }
+            // F-06: draft / taper angle.
+            let mut draft = p.draft_angle.to_degrees();
+            let draft_response =
+                ui.add(egui::Slider::new(&mut draft, -30.0..=30.0).text("draft (deg)"));
+            draft_response.on_hover_text(
+                "Taper: the far cap shrinks (positive) or grows (negative) toward the profile centroid",
+            );
+            let new_draft = draft.to_radians();
+            if (new_draft - p.draft_angle).abs() > 1e-9 {
+                let mut newp = p.clone();
+                newp.draft_angle = new_draft;
+                edit(app, Feature::Extrude(newp));
+            }
             ui.separator();
             ui.label(format!("Operation: {}", p.operation));
             ui.label(format!("Direction: {:?}", p.direction));

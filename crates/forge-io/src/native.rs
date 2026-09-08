@@ -58,6 +58,7 @@ mod tests {
             direction: forge_geometry::ExtrudeDirection::Symmetric,
             operation: ExtrudeOp::New,
             target: FeatureId::NONE,
+            draft_angle: 0.0,
         }))
         .unwrap();
         doc.add_feature(Feature::Primitive(PrimitiveParams {

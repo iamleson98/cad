@@ -95,9 +95,20 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       palette command.*
 - [ ] **F-05 Shell / hollow** `(L)` `P2` — needs face-level selection (see
       W-04) or a B-Rep kernel; documented in `forge-geometry/src/detail.rs`.
-- [ ] **F-06 Draft / taper on extrude** `(M)` `P2`
+- [x] **F-06 Draft / taper on extrude** `(M)` `P2`
       Extrude with per-side slope (loft trick: section pair, one offset-
       scaled). Reuses loft path.
+      *Done: `ExtrudeParams.draft_angle` (radians, serde-default 0 — old
+      files unchanged). The far cap is scaled toward the section centroid
+      by k = 1 − tan(draft)·h_wall/r_mean (clamped ≥ 0.02 so extreme
+      angles degenerate, never flip; |draft| < 80° validated). Scaling is
+      an affine map, so the same triangulation + contour correspondence
+      stay valid — walls become ruled surfaces (the scaled-section loft
+      trick). Symmetric + draft evaluates as two mirrored frusta sharing
+      the sketch-plane section (a single both-caps-scaled mesh would lose
+      the waist). Inspector draft slider (±30°, live), feature label
+      shows ≈N°. Frustum volumes exact in tests; RON backward-compat
+      tested.*
 - [ ] **F-07 Thin-wall / rib extrude mode** `(M)` `P2`
       Offset open profiles by thickness and cap ends (sheet-metal basics).
 - [x] **P-01 User parameter table + expressions** `(M)` `P1`

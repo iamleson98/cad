@@ -361,6 +361,7 @@ impl Evaluator {
                         &forge_geometry::ExtrudeParams {
                             distance,
                             direction: p.direction,
+                            draft_angle: p.draft_angle,
                         },
                     )?;
                     solid.merge(&mesh);
@@ -1618,6 +1619,7 @@ mod tests {
             direction: forge_geometry::ExtrudeDirection::Symmetric,
             operation: ExtrudeOp::Cut,
             target: plate,
+            draft_angle: 0.0,
         }))
         .unwrap();
 
@@ -1650,6 +1652,7 @@ mod tests {
                 direction: forge_geometry::ExtrudeDirection::Positive,
                 operation: ExtrudeOp::New,
                 target: FeatureId::NONE,
+                draft_angle: 0.0,
             }))
             .unwrap();
 
@@ -1661,6 +1664,71 @@ mod tests {
         assert_eq!(body.id.raw(), extrude_id.raw());
         let v = body.mesh.volume_signed();
         assert!((v - 400.0 * 5.0).abs() < 1e-6, "volume {v}");
+    }
+
+    // ---- F-06: draft / taper through the model layer --------------------
+
+    #[test]
+    fn extrude_with_draft_frustum_volume() {
+        // 20x20 sketch extruded 5 mm with a 10° draft: the top cap scales
+        // toward the section centroid; the frustum volume follows
+        // V = h/3 · (A1 + A2 + √(A1·A2)) with k from the mean vertex
+        // radius (4 corners at 10√2 → r_mean = 10√2).
+        let mut doc = Document::new("draft");
+        let mut sketch = Sketch::new(
+            SketchId::new(1),
+            "s",
+            SketchPlane::Datum {
+                datum: DatumPlane::XY,
+            },
+        );
+        sketch.add_rectangle(Point2::new(-10.0, -10.0), Point2::new(10.0, 10.0));
+        let sketch_id = doc.add_feature(Feature::Sketch(sketch)).unwrap();
+        let h = 5.0;
+        let draft = 10.0_f64.to_radians();
+        doc.add_feature(Feature::Extrude(ExtrudeParams {
+            profile: sketch_id,
+            distance: h,
+            direction: forge_geometry::ExtrudeDirection::Positive,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+            draft_angle: draft,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let v = result.bodies[0].mesh.volume_signed();
+        let r_mean = 10.0 * std::f64::consts::SQRT_2;
+        let k = 1.0 - draft.tan() * h / r_mean;
+        let (a1, a2) = (400.0, 400.0 * k * k);
+        let want = h / 3.0 * (a1 + a2 + (a1 * a2).sqrt());
+        assert!((v - want).abs() < 1e-9, "volume {v} vs {want}");
+    }
+
+    #[test]
+    fn extrude_draft_defaults_to_zero_for_old_files() {
+        // Pre-F-06 RON has no `draft_angle` field: it must deserialize to
+        // 0.0 (straight walls, behavior unchanged).
+        let feature = Feature::Extrude(ExtrudeParams {
+            profile: FeatureId::new(3),
+            distance: 12.0,
+            direction: forge_geometry::ExtrudeDirection::Positive,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+            draft_angle: 0.5,
+        });
+        let s = ron::to_string(&feature).expect("serialize");
+        // Remove the trailing field verbatim (old files have no
+        // `draft_angle`): compact RON emits `,draft_angle:0.5` exactly.
+        let old_text = s.replace(",draft_angle:0.5", "");
+        assert_ne!(old_text, s, "field fragment not found in: {s}");
+        let old: Feature = ron::from_str(&old_text).expect("parse old format");
+        match old {
+            Feature::Extrude(p) => assert_eq!(p.draft_angle, 0.0),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
@@ -1794,6 +1862,7 @@ mod tests {
                 direction: forge_geometry::ExtrudeDirection::Positive,
                 operation: ExtrudeOp::New,
                 target: FeatureId::NONE,
+                draft_angle: 0.0,
             }))
             .unwrap();
 
@@ -1859,6 +1928,7 @@ mod tests {
                 direction: forge_geometry::ExtrudeDirection::Positive,
                 operation: ExtrudeOp::New,
                 target: FeatureId::NONE,
+                draft_angle: 0.0,
             }))
             .unwrap();
         // Binding references a parameter that does not exist.
@@ -1897,6 +1967,7 @@ mod tests {
             direction: forge_geometry::ExtrudeDirection::Positive,
             operation: ExtrudeOp::New,
             target: FeatureId::NONE,
+            draft_angle: 0.0,
         }))
         .unwrap();
 
@@ -1935,6 +2006,7 @@ mod tests {
                 direction: forge_geometry::ExtrudeDirection::Positive,
                 operation: ExtrudeOp::New,
                 target: FeatureId::NONE,
+                draft_angle: 0.0,
             }))
             .unwrap();
 
@@ -1985,6 +2057,7 @@ mod tests {
             direction: forge_geometry::ExtrudeDirection::Positive,
             operation: ExtrudeOp::New,
             target: FeatureId::NONE,
+            draft_angle: 0.0,
         }))
         .unwrap();
         let mut ev = Evaluator::default();
@@ -2016,6 +2089,7 @@ mod tests {
                 direction: forge_geometry::ExtrudeDirection::Positive,
                 operation: ExtrudeOp::New,
                 target: FeatureId::NONE,
+                draft_angle: 0.0,
             }))
             .unwrap();
         doc.tree.set_suppressed(datum_id, true).unwrap();

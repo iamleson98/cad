@@ -45,6 +45,10 @@ pub struct ExtrudeParams {
     pub operation: ExtrudeOp,
     /// Target body feature for Join/Cut (ignored for New).
     pub target: FeatureId,
+    /// Draft (taper) angle in radians, 0 = straight walls (F-06). The
+    /// far cap section is scaled toward the profile centroid.
+    #[serde(default)]
+    pub draft_angle: f64,
 }
 
 /// Parameters of a revolve feature.
@@ -364,7 +368,18 @@ impl Feature {
     pub fn label(&self) -> String {
         match self {
             Feature::Sketch(s) => format!("Sketch: {}", s.name),
-            Feature::Extrude(p) => format!("Extrude {} ({})", p.distance, p.operation),
+            Feature::Extrude(p) => {
+                if p.draft_angle.abs() > 1e-9 {
+                    format!(
+                        "Extrude {} \u{2248}{}\u{00b0} ({})",
+                        p.distance,
+                        p.draft_angle.to_degrees().round(),
+                        p.operation
+                    )
+                } else {
+                    format!("Extrude {} ({})", p.distance, p.operation)
+                }
+            }
             Feature::Revolve(p) => {
                 format!("Revolve {:.0}\u{00b0}", p.angle.to_degrees())
             }

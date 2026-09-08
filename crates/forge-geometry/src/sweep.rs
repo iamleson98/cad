@@ -69,6 +69,12 @@ pub struct ExtrudeParams {
     pub distance: f64,
     /// Which side to extrude towards.
     pub direction: ExtrudeDirection,
+    /// Draft (taper) angle in radians, 0 = straight walls (F-06). The
+    /// far cap is scaled toward the profile centroid so the walls
+    /// slope inward (positive angle) or outward (negative). The angle
+    /// is exact at the profile's mean radius from its centroid and an
+    /// approximation elsewhere (the classic scaled-section loft trick).
+    pub draft_angle: f64,
 }
 
 impl Default for ExtrudeParams {
@@ -76,6 +82,7 @@ impl Default for ExtrudeParams {
         Self {
             distance: 10.0,
             direction: ExtrudeDirection::Positive,
+            draft_angle: 0.0,
         }
     }
 }
@@ -97,12 +104,46 @@ fn plane_point(
     *origin + u * local.x + v * local.y + n * z
 }
 
-/// Extrude `profile` (lying on `plane`) into a solid.
+/// Extrude `profile` (lying on `plane`) into a solid, optionally with a
+/// draft (taper) angle (F-06).
 pub fn extrude(profile: &Profile2D, plane: &Plane, params: &ExtrudeParams) -> Result<TriMesh> {
     if params.distance <= 0.0 {
         return Err(GeometryError::Core(forge_core::CoreError::Invalid(
             "extrude distance must be positive".into(),
         )));
+    }
+    if !params.draft_angle.is_finite() || params.draft_angle.abs() >= 80.0_f64.to_radians() {
+        return Err(GeometryError::Core(forge_core::CoreError::Invalid(
+            "draft angle must be within ±80°".into(),
+        )));
+    }
+    // Symmetric draft (F-06): two mirrored tapered halves sharing the
+    // sketch-plane section (each half is a frustum, base = the unscaled
+    // profile). A single mesh with both caps scaled would lose the waist
+    // and collapse to a plain smaller prism.
+    if params.direction == ExtrudeDirection::Symmetric && params.draft_angle != 0.0 {
+        let half = params.distance * 0.5;
+        let mut mesh = extrude(
+            profile,
+            plane,
+            &ExtrudeParams {
+                distance: half,
+                direction: ExtrudeDirection::Positive,
+                draft_angle: params.draft_angle,
+            },
+        )?;
+        let lower = extrude(
+            profile,
+            plane,
+            &ExtrudeParams {
+                distance: half,
+                direction: ExtrudeDirection::Negative,
+                draft_angle: params.draft_angle,
+            },
+        )?;
+        mesh.merge(&lower);
+        mesh.compute_vertex_normals();
+        return Ok(mesh);
     }
     let (z0, z1) = match params.direction {
         ExtrudeDirection::Positive => (0.0, params.distance),
@@ -113,16 +154,48 @@ pub fn extrude(profile: &Profile2D, plane: &Plane, params: &ExtrudeParams) -> Re
     let tri = triangulate_with_holes(&profile.outer, &profile.holes)?;
     let v = tri.vertices.len();
 
+    // Draft (F-06): the far cap is scaled toward the section centroid.
+    // Scaling is an affine map, so the *same* triangulation and contour
+    // correspondence stay valid — the side walls become ruled surfaces.
+    //   tan(draft) = r_mean · (1 − k) / wall_height  ⇒  k = 1 − tan·h/r
+    // k is clamped so extreme angles degenerate to a point, never flip.
+    // Symmetric extrusions taper each half, so the wall height is d/2.
+    let wall_height = match params.direction {
+        ExtrudeDirection::Symmetric => params.distance * 0.5,
+        _ => params.distance,
+    };
+    let scale_top = |pts: &[Point2]| -> (Point2, f64) {
+        let c = pts.iter().fold(Point2::origin(), |acc, p| acc + p.coords) / pts.len() as f64;
+        let r_mean = pts.iter().map(|p| (*p - c).norm()).sum::<f64>() / pts.len() as f64;
+        let k = if r_mean < 1e-9 || params.draft_angle == 0.0 {
+            1.0
+        } else {
+            let k = 1.0 - params.draft_angle.tan() * wall_height / r_mean;
+            k.clamp(0.02, 50.0)
+        };
+        (c, k)
+    };
+    // Which cap is "far" (tapered): Positive → z1, Negative → z0.
+    // (Symmetric + draft is handled by the recursive split above; plain
+    // symmetric keeps k = 1 anyway.)
+    let (c, k) = scale_top(&tri.vertices);
+    let taper_top = matches!(params.direction, ExtrudeDirection::Positive);
+    let taper_bottom = matches!(params.direction, ExtrudeDirection::Negative);
+
     let f = frame(plane);
     let origin = plane.origin;
 
     // Vertex layout: [ upper (z1): 0..v ][ lower (z0): v..2v ].
     let mut mesh = TriMesh::with_capacity(2 * v, tri.triangles.len() * 2 + perimeter(profile) * 2);
+    let scale_pt =
+        |p: &Point2, c: &Point2, k: f64| -> Point2 { Point2::from(c.coords + (*p - c) * k) };
     for p in &tri.vertices {
-        mesh.positions.push(plane_point(f, &origin, *p, z1));
+        let p = if taper_top { scale_pt(p, &c, k) } else { *p };
+        mesh.positions.push(plane_point(f, &origin, p, z1));
     }
     for p in &tri.vertices {
-        mesh.positions.push(plane_point(f, &origin, *p, z0));
+        let p = if taper_bottom { scale_pt(p, &c, k) } else { *p };
+        mesh.positions.push(plane_point(f, &origin, p, z0));
     }
 
     // Upper cap: as triangulated (CCW seen from +n).
@@ -670,11 +743,108 @@ mod tests {
             &ExtrudeParams {
                 distance: 5.0,
                 direction: ExtrudeDirection::Positive,
+                draft_angle: 0.0,
             },
         )
         .unwrap();
         assert!(mesh.is_closed());
         assert_abs_diff_eq!(mesh.volume().unwrap(), 1000.0, epsilon = 1e-6);
+    }
+
+    // ---- F-06: draft / taper ----------------------------------------------
+
+    #[test]
+    fn tapered_extrude_frustum_volume() {
+        // Square 10x10, height 10, positive draft: the top cap is scaled
+        // toward the centroid by k (k derived from the mean vertex radius,
+        // so for a square of side a, r_mean = a/√2 and the wall slope is
+        // exact on the mid-edge points). Verify against the exact frustum
+        // volume V = h/3 · (A1 + A2 + √(A1·A2)).
+        let a = 10.0;
+        let h = 10.0;
+        let draft = 10.0_f64.to_radians();
+        let r_mean = a / std::f64::consts::SQRT_2; // 4 corner vertices
+        let k = 1.0 - draft.tan() * h / r_mean;
+        let profile = square_profile((-a / 2.0, -a / 2.0), (a / 2.0, a / 2.0));
+        let mesh = extrude(
+            &profile,
+            &Plane::default(),
+            &ExtrudeParams {
+                distance: h,
+                direction: ExtrudeDirection::Positive,
+                draft_angle: draft,
+            },
+        )
+        .unwrap();
+        assert!(mesh.is_closed(), "tapered extrusion must stay watertight");
+        let a1 = a * a;
+        let a2 = (a * k) * (a * k);
+        let want = h / 3.0 * (a1 + a2 + (a1 * a2).sqrt());
+        assert_abs_diff_eq!(mesh.volume().unwrap(), want, epsilon = 1e-9);
+        // The height is unchanged.
+        let bb = mesh.bbox();
+        assert_abs_diff_eq!(bb.max.z - bb.min.z, h, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn tapered_extrude_symmetric_tapers_both_ends() {
+        // Symmetric: both caps scaled by the same k about the section —
+        // the frustum is mirrored, so the volume equals two half-height
+        // frusta. bbox xy extent at the caps < section extent.
+        let a = 10.0;
+        let h = 8.0;
+        let draft = 5.0_f64.to_radians();
+        let r_mean = a / std::f64::consts::SQRT_2;
+        let k = 1.0 - draft.tan() * (h / 2.0) / r_mean;
+        let profile = square_profile((-a / 2.0, -a / 2.0), (a / 2.0, a / 2.0));
+        let mesh = extrude(
+            &profile,
+            &Plane::default(),
+            &ExtrudeParams {
+                distance: h,
+                direction: ExtrudeDirection::Symmetric,
+                draft_angle: draft,
+            },
+        )
+        .unwrap();
+        assert!(mesh.is_closed());
+        // Two mirrored frusta of height h/2: bases a² at the mid-plane,
+        // tops (a·k)² at the caps.
+        let half = h / 2.0;
+        let a1 = a * a;
+        let a2 = (a * k) * (a * k);
+        let want = 2.0 * (half / 3.0 * (a1 + a2 + (a1 * a2).sqrt()));
+        assert_abs_diff_eq!(mesh.volume().unwrap(), want, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn tapered_extrude_extreme_angle_clamps_not_flips() {
+        // A 70° draft on a tall extrusion would flip the section; the
+        // clamp keeps k ≥ 0.02 so the solid stays valid (non-inverted).
+        let profile = square_profile((-5.0, -5.0), (5.0, 5.0));
+        let mesh = extrude(
+            &profile,
+            &Plane::default(),
+            &ExtrudeParams {
+                distance: 100.0,
+                direction: ExtrudeDirection::Positive,
+                draft_angle: 70.0_f64.to_radians(),
+            },
+        )
+        .unwrap();
+        assert!(mesh.is_closed());
+        assert!(mesh.volume().unwrap() > 0.0, "never inverted");
+        // Out of-range angles are rejected outright.
+        assert!(extrude(
+            &profile,
+            &Plane::default(),
+            &ExtrudeParams {
+                distance: 10.0,
+                direction: ExtrudeDirection::Positive,
+                draft_angle: 85.0_f64.to_radians(),
+            },
+        )
+        .is_err());
     }
 
     #[test]
@@ -686,6 +856,7 @@ mod tests {
             &ExtrudeParams {
                 distance: 4.0,
                 direction: ExtrudeDirection::Symmetric,
+                draft_angle: 0.0,
             },
         )
         .unwrap();

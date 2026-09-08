@@ -68,6 +68,7 @@ mod tests {
             &ExtrudeParams {
                 distance: 10.0,
                 direction: ExtrudeDirection::Symmetric,
+                draft_angle: 0.0,
             },
         )
         .expect("extrude");

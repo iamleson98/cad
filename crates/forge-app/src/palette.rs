@@ -977,6 +977,7 @@ impl ForgeApp {
             direction: ExtrudeDirection::Positive,
             operation: ExtrudeOp::New,
             target: FeatureId::NONE,
+            draft_angle: 0.0,
         });
         match self.doc.add_feature(feature) {
             Ok(_id) => {
