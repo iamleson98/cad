@@ -1,0 +1,20 @@
+[package]
+name = "forge-render"
+description = "WebGPU rendering engine: multi-pass PBR pipeline, depth-peeled transparency, edge rendering, GPU picking"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+forge-core = { workspace = true }
+forge-geometry = { workspace = true }
+nalgebra = { workspace = true }
+glam = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+thiserror = { workspace = true }
+log = "0.4"
+
+[dev-dependencies]
+approx = "0.5"

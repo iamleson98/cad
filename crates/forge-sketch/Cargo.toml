@@ -1,0 +1,16 @@
+[package]
+name = "forge-sketch"
+description = "2D parametric sketcher: entities, geometric/dimensional constraints, Levenberg-Marquardt solver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+forge-core = { workspace = true }
+nalgebra = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = "0.5"

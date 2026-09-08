@@ -1,0 +1,37 @@
+[package]
+name = "forge-app"
+description = "ForgeCAD desktop application: egui/eframe shell, viewport, feature tree UI, command palette, autosave"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "forgecad"
+path = "src/main.rs"
+
+[dependencies]
+forge-core = { workspace = true }
+forge-geometry = { workspace = true }
+forge-sketch = { workspace = true }
+forge-model = { workspace = true }
+forge-io = { workspace = true }
+forge-render = { workspace = true }
+
+egui = { workspace = true }
+eframe = { workspace = true }
+egui-wgpu = { workspace = true }
+wgpu = { workspace = true }
+
+nalgebra = { workspace = true }
+rayon = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+ron = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+approx = "0.5"

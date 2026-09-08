@@ -1,0 +1,413 @@
+//! Command palette (FR-UI-01) and palette actions.
+
+use crate::app::ForgeApp;
+use forge_core::{FeatureId, Point2, Point3, SketchId, Vector3};
+use forge_geometry::ExtrudeDirection;
+use forge_model::{
+    BooleanFeature, Command, ExtrudeOp, ExtrudeParams, Feature, PrimitiveKind, PrimitiveParams,
+};
+use forge_render::Scene;
+use forge_sketch::{DatumPlane, Sketch, SketchPlane};
+
+/// A palette entry.
+pub struct PaletteEntry {
+    /// Display label.
+    pub label: &'static str,
+    /// Keyword hint for fuzzy matching.
+    pub keywords: &'static str,
+    /// The action.
+    pub action: PaletteAction,
+}
+
+/// All palette commands.
+pub fn entries() -> Vec<PaletteEntry> {
+    use PaletteAction::*;
+    vec![
+        PaletteEntry { label: "Add Box", keywords: "primitive solid box", action: AddBox },
+        PaletteEntry { label: "Add Sphere", keywords: "primitive solid sphere", action: AddSphere },
+        PaletteEntry { label: "Add Cylinder", keywords: "primitive solid cylinder", action: AddCylinder },
+        PaletteEntry { label: "Add Cone", keywords: "primitive solid cone", action: AddCone },
+        PaletteEntry { label: "Add Torus", keywords: "primitive solid torus", action: AddTorus },
+        PaletteEntry { label: "New Sketch: rectangle on XY", keywords: "sketch draw rectangle profile", action: NewSketchXY },
+        PaletteEntry { label: "New Sketch: rectangle on YZ", keywords: "sketch draw rectangle", action: NewSketchYZ },
+        PaletteEntry { label: "New Sketch: rectangle on XZ", keywords: "sketch draw rectangle", action: NewSketchXZ },
+        PaletteEntry { label: "Extrude latest sketch (new body)", keywords: "extrude boss solid", action: ExtrudeLastSketch },
+        PaletteEntry { label: "Cut latest body with cylinder", keywords: "boolean cut drill hole", action: CutWithCylinder },
+        PaletteEntry { label: "Union two latest bodies", keywords: "boolean union combine", action: UnionLastTwo },
+        PaletteEntry { label: "Subtract two latest bodies", keywords: "boolean difference subtract", action: DifferenceLastTwo },
+        PaletteEntry { label: "Intersect two latest bodies", keywords: "boolean intersection", action: IntersectLastTwo },
+        PaletteEntry { label: "Delete selected feature", keywords: "remove feature", action: DeleteSelected },
+        PaletteEntry { label: "Suppress selected feature", keywords: "toggle suppress", action: SuppressSelected },
+        PaletteEntry { label: "Undo", keywords: "history revert", action: Undo },
+        PaletteEntry { label: "Redo", keywords: "history forward", action: Redo },
+        PaletteEntry { label: "Fit view", keywords: "zoom frame camera", action: FitView },
+        PaletteEntry { label: "Toggle perspective / orthographic", keywords: "projection camera", action: ToggleProjection },
+        PaletteEntry { label: "Front view", keywords: "camera", action: FrontView },
+        PaletteEntry { label: "Top view", keywords: "camera", action: TopView },
+        PaletteEntry { label: "Right view", keywords: "camera", action: RightView },
+        PaletteEntry { label: "Isometric view", keywords: "camera iso", action: IsoView },
+        PaletteEntry { label: "Toggle ground grid", keywords: "grid", action: ToggleGrid },
+        PaletteEntry { label: "Toggle feature edges", keywords: "edges lines", action: ToggleEdges },
+        PaletteEntry { label: "Save document (.forgecad)", keywords: "file save native", action: SaveNative },
+        PaletteEntry { label: "Export STL", keywords: "file export mesh", action: ExportSTL },
+        PaletteEntry { label: "Export OBJ", keywords: "file export mesh", action: ExportOBJ },
+        PaletteEntry { label: "Export glTF", keywords: "file export mesh", action: ExportGLTF },
+    ]
+}
+
+/// Palette actions.
+#[derive(Clone, Copy, PartialEq)]
+pub enum PaletteAction {
+    AddBox,
+    AddSphere,
+    AddCylinder,
+    AddCone,
+    AddTorus,
+    NewSketchXY,
+    NewSketchYZ,
+    NewSketchXZ,
+    ExtrudeLastSketch,
+    CutWithCylinder,
+    UnionLastTwo,
+    DifferenceLastTwo,
+    IntersectLastTwo,
+    DeleteSelected,
+    SuppressSelected,
+    Undo,
+    Redo,
+    FitView,
+    ToggleProjection,
+    FrontView,
+    TopView,
+    RightView,
+    IsoView,
+    ToggleGrid,
+    ToggleEdges,
+    SaveNative,
+    ExportSTL,
+    ExportOBJ,
+    ExportGLTF,
+}
+
+/// Simple subsequence fuzzy match score; `usize::MAX` means no match.
+pub fn fuzzy_score(query: &str, label: &str, keywords: &str) -> Option<usize> {
+    let q = query.to_lowercase();
+    if q.is_empty() {
+        return Some(0);
+    }
+    let hay = format!("{label} {keywords}").to_lowercase();
+    // Subsequence match.
+    let mut score = 0usize;
+    let mut last = 0usize;
+    for c in q.chars() {
+        match hay[last..].find(c) {
+            Some(idx) => {
+                score += idx + 1; // earlier matches score better
+                last += idx + 1;
+            }
+            None => return None,
+        }
+    }
+    Some(score)
+}
+
+impl PaletteAction {
+    /// Execute the action against the app.
+    pub fn run(self, app: &mut ForgeApp) {
+        use PaletteAction::*;
+        match self {
+            AddBox => app.add_primitive(PrimitiveKind::Box, Vector3::new(40.0, 30.0, 20.0)),
+            AddSphere => app.add_primitive(PrimitiveKind::Sphere, Vector3::new(20.0, 0.0, 0.0)),
+            AddCylinder => app.add_primitive(PrimitiveKind::Cylinder, Vector3::new(10.0, 30.0, 0.0)),
+            AddCone => app.add_primitive(PrimitiveKind::Cone, Vector3::new(12.0, 6.0, 25.0)),
+            AddTorus => app.add_primitive(PrimitiveKind::Torus, Vector3::new(20.0, 6.0, 0.0)),
+
+            NewSketchXY => app.add_sketch_rect(DatumPlane::XY),
+            NewSketchYZ => app.add_sketch_rect(DatumPlane::YZ),
+            NewSketchXZ => app.add_sketch_rect(DatumPlane::XZ),
+
+            ExtrudeLastSketch => app.extrude_last_sketch(),
+            CutWithCylinder => app.cut_with_cylinder(),
+            UnionLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Union),
+            DifferenceLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Difference),
+            IntersectLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Intersection),
+
+            DeleteSelected => app.delete_selected(),
+            SuppressSelected => app.toggle_suppress_selected(),
+
+            Undo => {
+                if let Ok(desc) = app.commands.undo(&mut app.doc) {
+                    app.set_status(format!("Undo: {desc}"));
+                    app.request_evaluation();
+                }
+            }
+            Redo => {
+                if let Ok(desc) = app.commands.redo(&mut app.doc) {
+                    app.set_status(format!("Redo: {desc}"));
+                    app.request_evaluation();
+                }
+            }
+
+            FitView => app.camera.fit_to(&app.scene_bounds()),
+            ToggleProjection => app.camera.orthographic = !app.camera.orthographic,
+            FrontView => {
+                app.camera.yaw = std::f64::consts::FRAC_PI_2;
+                app.camera.pitch = 0.0;
+            }
+            TopView => {
+                app.camera.pitch = 1.5;
+            }
+            RightView => {
+                app.camera.yaw = 0.0;
+                app.camera.pitch = 0.0;
+            }
+            IsoView => {
+                app.camera.yaw = -0.6;
+                app.camera.pitch = 0.45;
+            }
+
+            ToggleGrid => app.render_options.show_grid = !app.render_options.show_grid,
+            ToggleEdges => {
+                app.render_options.show_edges = !app.render_options.show_edges;
+                app.scene.show_edges = app.render_options.show_edges;
+                app.scene.version += 1;
+            }
+
+            SaveNative => app.save_native_dialog(),
+            ExportSTL => app.export_mesh(forge_io::ExportFormat::Stl),
+            ExportOBJ => app.export_mesh(forge_io::ExportFormat::Obj),
+            ExportGLTF => app.export_mesh(forge_io::ExportFormat::Gltf),
+        }
+    }
+}
+
+impl ForgeApp {
+    /// Add a primitive feature (recorded in the undo stack).
+    pub(crate) fn add_primitive(&mut self, kind: PrimitiveKind, dims: Vector3) {
+        let center = Point3::origin();
+        let feature = Feature::Primitive(PrimitiveParams { kind, center, dims });
+        match self.doc.add_feature(feature.clone()) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(Command::AddFeature { node }, &mut self.doc);
+                }
+                self.set_status(format!("Added {kind}"));
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Add a sketch with a parametric rectangle on a datum plane.
+    pub(crate) fn add_sketch_rect(&mut self, datum: DatumPlane) {
+        let sketch_id = SketchId::new(self.doc.allocator.next_id());
+        let mut sketch = Sketch::new(sketch_id, "profile", SketchPlane::Datum { datum });
+        sketch.add_rectangle(Point2::new(-15.0, -10.0), Point2::new(15.0, 10.0));
+        match self.doc.add_feature(Feature::Sketch(sketch.clone())) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(Command::AddFeature { node }, &mut self.doc);
+                }
+                self.set_status(format!("Sketch created on {datum:?}"));
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Extrude the most recent sketch feature as a new body.
+    pub(crate) fn extrude_last_sketch(&mut self) {
+        let sketch_id = self
+            .doc
+            .tree
+            .order()
+            .iter()
+            .rev()
+            .find(|id| matches!(self.doc.feature(**id), Some(Feature::Sketch(_))))
+            .copied();
+        let Some(sketch_id) = sketch_id else {
+            self.set_status("No sketch found: create one first (palette: New Sketch)");
+            return;
+        };
+        let feature = Feature::Extrude(ExtrudeParams {
+            profile: sketch_id,
+            distance: 10.0,
+            direction: ExtrudeDirection::Positive,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        });
+        match self.doc.add_feature(feature) {
+            Ok(_id) => {
+                self.set_status("Extrude added (edit distance in the inspector)");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Drill a hole through the latest body with a boolean cylinder cut.
+    pub(crate) fn cut_with_cylinder(&mut self) {
+        let body = self
+            .doc
+            .tree
+            .order()
+            .iter()
+            .rev()
+            .find(|id| {
+                matches!(
+                    self.doc.feature(**id),
+                    Some(Feature::Primitive(_)) | Some(Feature::Extrude(_)) | Some(Feature::Boolean(_))
+                )
+            })
+            .copied();
+        let Some(target) = body else {
+            self.set_status("No body to cut: add a solid first");
+            return;
+        };
+        let bb = self
+            .last_evaluation
+            .as_ref()
+            .and_then(|ev| ev.bodies.iter().find(|b| b.source == target))
+            .map(|b| b.mesh.bbox());
+        let height = bb.map(|b| b.size().z * 3.0 + 20.0).unwrap_or(60.0);
+        let base = bb.map(|b| b.min.z - 10.0).unwrap_or(-10.0);
+
+        // Cylinder primitive…
+        let cyl = PrimitiveParams {
+            kind: PrimitiveKind::Cylinder,
+            center: Point3::new(0.0, 0.0, base),
+            dims: Vector3::new(6.0, height, 0.0),
+        };
+        let cyl_id = match self.doc.add_feature(Feature::Primitive(cyl)) {
+            Ok(id) => id,
+            Err(e) => {
+                self.set_status(format!("{e}"));
+                return;
+            }
+        };
+        // …combined as a difference.
+        let feature = Feature::Boolean(BooleanFeature {
+            op: forge_geometry::CsgOp::Difference,
+            operands: vec![target, cyl_id],
+        });
+        match self.doc.add_feature(feature) {
+            Ok(_id) => {
+                self.set_status("Cylinder cut added");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Combine the two latest solid bodies with a boolean op.
+    pub(crate) fn boolean_last_two(&mut self, op: forge_geometry::CsgOp) {
+        let bodies: Vec<FeatureId> = self
+            .doc
+            .tree
+            .order()
+            .iter()
+            .rev()
+            .filter(|id| {
+                matches!(
+                    self.doc.feature(**id),
+                    Some(Feature::Primitive(_)) | Some(Feature::Extrude(_)) | Some(Feature::Boolean(_))
+                )
+            })
+            .copied()
+            .take(2)
+            .collect();
+        if bodies.len() < 2 {
+            self.set_status("Need two solid bodies for a boolean");
+            return;
+        }
+        let mut operands = bodies;
+        operands.reverse(); // chronological order
+        let feature = Feature::Boolean(BooleanFeature { op, operands });
+        match self.doc.add_feature(feature) {
+            Ok(_id) => {
+                self.set_status(format!("Boolean {op} added"));
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    pub(crate) fn delete_selected(&mut self) {
+        let Some(id) = self.selection.primary_feature() else {
+            self.set_status("Nothing selected");
+            return;
+        };
+        let index = self
+            .doc
+            .tree
+            .order()
+            .iter()
+            .position(|i| *i == id)
+            .unwrap_or(0);
+        match self.doc.remove_feature(id) {
+            Ok(feature) => {
+                let node = forge_model::FeatureNode {
+                    id,
+                    feature,
+                    parents: Default::default(),
+                    children: Default::default(),
+                    suppressed: false,
+                    dirty: true,
+                };
+                let _ = self
+                    .commands
+                    .execute(Command::RemoveFeature { node, index }, &mut self.doc);
+                self.selection.clear();
+                self.set_status("Feature deleted");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    pub(crate) fn toggle_suppress_selected(&mut self) {
+        let Some(id) = self.selection.primary_feature() else {
+            self.set_status("Nothing selected");
+            return;
+        };
+        let before = self.doc.tree.get(id).map(|n| n.suppressed).unwrap_or(false);
+        let after = !before;
+        if self.doc.tree.set_suppressed(id, after).is_ok() {
+            let _ = self.commands.execute(
+                Command::SetSuppressed { id, before, after },
+                &mut self.doc,
+            );
+            self.set_status(if after { "Feature suppressed" } else { "Feature unsuppressed" });
+            self.request_evaluation();
+        }
+    }
+
+    /// Bounds of everything in the scene (for "fit view").
+    pub(crate) fn scene_bounds(&self) -> forge_core::BBox3 {
+        let mut bb = forge_core::BBox3::default();
+        if let Some(ev) = &self.last_evaluation {
+            for b in &ev.bodies {
+                bb = bb.union(&b.mesh.bbox());
+            }
+        }
+        bb
+    }
+
+    /// Default body colors (selection highlight, Scene::SELECTED).
+    pub(crate) fn body_color(&self, source: forge_core::FeatureId) -> [f32; 4] {
+        if self
+            .selection
+            .bodies()
+            .iter()
+            .any(|b| b.raw() == source.raw())
+        {
+            Scene::SELECTED
+        } else {
+            Scene::DEFAULT
+        }
+    }
+}

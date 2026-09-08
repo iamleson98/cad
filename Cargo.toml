@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/forge-core",
+    "crates/forge-geometry",
+    "crates/forge-sketch",
+    "crates/forge-model",
+    "crates/forge-io",
+    "crates/forge-render",
+    "crates/forge-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# internal crates
+forge-core = { path = "crates/forge-core", version = "0.1.0" }
+forge-geometry = { path = "crates/forge-geometry", version = "0.1.0" }
+forge-sketch = { path = "crates/forge-sketch", version = "0.1.0" }
+forge-model = { path = "crates/forge-model", version = "0.1.0" }
+forge-io = { path = "crates/forge-io", version = "0.1.0" }
+forge-render = { path = "crates/forge-render", version = "0.1.0" }
+
+# math
+nalgebra = { version = "0.35", features = ["serde-serialize"] }
+glam = "0.33"
+
+# concurrency + async
+rayon = "1.12"
+tokio = { version = "1.53", features = ["rt-multi-thread", "fs", "time", "sync", "macros"] }
+
+# serialization
+serde = { version = "1.0", features = ["derive"] }
+ron = "0.12"
+
+# rendering
+wgpu = "30"
+egui = "0.36.1"
+eframe = { version = "0.36.1", features = ["wgpu"] }
+egui-wgpu = "0.36.1"
+bytemuck = { version = "1.25", features = ["derive"] }
+pollster = "1.0"
+
+# error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 4
+
+[profile.dev.package."*"]
+opt-level = 1

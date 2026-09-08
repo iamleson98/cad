@@ -1,0 +1,432 @@
+//! Triangle mesh: the interchange data structure between the geometry
+//! kernel, the feature evaluator and the GPU renderer.
+//!
+//! The mesh is an indexed triangle set in **model units, `f64`**
+//! (NFR-PREC-01). Per-vertex normals are optional and always recomputed
+//! from topology rather than stored by producers.
+//!
+//! Face/edge/vertex identification (used by picking and selection) is
+//! derived on demand:
+//! - *faces* map to triangle ranges (one triangle group per body region in
+//!   v0.1, refined to topological faces when the B-Rep kernel lands),
+//! - *edges* are extracted by [`TriMesh::sharp_edges`] / boundary edges,
+//! - *vertices* are mesh corner positions after welding.
+
+use forge_core::{BBox3, Point3, Transform, Vector3};
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Default weld epsilon (mm). Vertices closer than this are considered
+/// identical, which removes the seam duplicates produced by CSG bridging
+/// and cap stitching.
+pub const WELD_EPS: f64 = 1e-7;
+
+/// Indexed triangle mesh.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TriMesh {
+    /// Vertex positions.
+    pub positions: Vec<Point3>,
+    /// Flat triangle index list; length is always a multiple of 3.
+    pub indices: Vec<u32>,
+    /// Optional per-vertex normals (normalized, outward).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normals: Option<Vec<Vector3>>,
+}
+
+impl TriMesh {
+    /// Create a mesh with pre-allocated capacity.
+    pub fn with_capacity(vertices: usize, triangles: usize) -> Self {
+        Self {
+            positions: Vec::with_capacity(vertices),
+            indices: Vec::with_capacity(triangles * 3),
+            normals: None,
+        }
+    }
+
+    /// Number of triangles.
+    pub fn tri_count(&self) -> usize {
+        self.indices.len() / 3
+    }
+
+    /// Number of vertices.
+    pub fn vertex_count(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// Append a single triangle by position.
+    pub fn push_triangle(&mut self, a: Point3, b: Point3, c: Point3) {
+        let base = self.positions.len() as u32;
+        self.positions.extend_from_slice(&[a, b, c]);
+        self.indices.extend_from_slice(&[base, base + 1, base + 2]);
+        self.normals = None;
+    }
+
+    /// Triangle vertex indices `[a, b, c]`.
+    pub fn triangle_idx(&self, i: usize) -> [u32; 3] {
+        let k = i * 3;
+        [self.indices[k], self.indices[k + 1], self.indices[k + 2]]
+    }
+
+    /// Triangle corner positions `[a, b, c]`.
+    pub fn triangle(&self, i: usize) -> [Point3; 3] {
+        let [a, b, c] = self.triangle_idx(i);
+        [self.positions[a as usize], self.positions[b as usize], self.positions[c as usize]]
+    }
+
+    /// Iterate over all triangles as position triples.
+    pub fn triangles(&self) -> impl Iterator<Item = [Point3; 3]> + '_ {
+        (0..self.tri_count()).map(move |i| self.triangle(i))
+    }
+
+    /// Geometric (unnormalized) normal of triangle `i`.
+    pub fn triangle_normal_raw(&self, i: usize) -> Vector3 {
+        let [a, b, c] = self.triangle(i);
+        (b - a).cross(&(c - a))
+    }
+
+    /// Unit normal of triangle `i`, or `None` if degenerate.
+    pub fn triangle_normal(&self, i: usize) -> Option<Vector3> {
+        let n = self.triangle_normal_raw(i);
+        let len = n.norm();
+        if len < 1e-20 {
+            None
+        } else {
+            Some(n / len)
+        }
+    }
+
+    /// Angle-weighted per-vertex normals (corner angle of each incident
+    /// triangle as weight), computed in parallel with `rayon`. This avoids
+    /// fan-triangulation double counting and yields exact face-average
+    /// normals on boxes. Degenerate vertices get `+Z`.
+    pub fn compute_vertex_normals(&mut self) {
+        let tri_count = self.tri_count();
+        let mut acc = vec![Vector3::zeros(); self.positions.len()];
+
+        // Parallel: triangle normals + corner angles.
+        let tri_data: Vec<([u32; 3], Option<(Vector3, [f64; 3])>)> = (0..tri_count)
+            .into_par_iter()
+            .map(|i| {
+                let idx = self.triangle_idx(i);
+                let n = self.triangle_normal(i);
+                let angles = n.map(|n| {
+                    let [a, b, c] = self.triangle(i);
+                    let ang = |p: Point3, q: Point3, r: Point3| -> f64 {
+                        let u = q - p;
+                        let v = r - p;
+                        let denom = u.norm() * v.norm();
+                        if denom < 1e-20 {
+                            0.0
+                        } else {
+                            (u.dot(&v) / denom).clamp(-1.0, 1.0).acos()
+                        }
+                    };
+                    (n, [ang(a, b, c), ang(b, c, a), ang(c, a, b)])
+                });
+                (idx, angles)
+            })
+            .collect();
+
+        for ([a, b, c], data) in tri_data {
+            if let Some((n, [wa, wb, wc])) = data {
+                acc[a as usize] += n * wa;
+                acc[b as usize] += n * wb;
+                acc[c as usize] += n * wc;
+            }
+        }
+
+        // Parallel: normalize.
+        acc.par_iter_mut().for_each(|n| {
+            let len = n.norm();
+            if len > 1e-20 {
+                *n /= len;
+            } else {
+                *n = Vector3::z();
+            }
+        });
+
+        self.normals = Some(acc);
+    }
+
+    /// Return a reference to the normals, computing them if missing.
+    pub fn ensure_normals(&mut self) -> &Vec<Vector3> {
+        if self.normals.is_none() {
+            self.compute_vertex_normals();
+        }
+        self.normals.as_ref().expect("normals just computed")
+    }
+
+    /// Bounding box of all vertex positions.
+    pub fn bbox(&self) -> BBox3 {
+        BBox3::from_points(self.positions.iter().copied())
+    }
+
+    /// Rigid-transformed copy.
+    pub fn transformed(&self, t: &Transform) -> Self {
+        Self {
+            positions: self.positions.iter().map(|p| t * *p).collect(),
+            indices: self.indices.clone(),
+            normals: self
+                .normals
+                .as_ref()
+                .map(|ns| ns.iter().map(|n| t * *n).collect()),
+        }
+    }
+
+    /// Transform in place.
+    pub fn apply_transform(&mut self, t: &Transform) {
+        for p in &mut self.positions {
+            *p = t * *p;
+        }
+        if let Some(ns) = &mut self.normals {
+            for n in ns {
+                *n = t * *n;
+            }
+        }
+    }
+
+    /// Merge `other` into `self`, offsetting indices.
+    pub fn merge(&mut self, other: &TriMesh) {
+        let offset = self.positions.len() as u32;
+        self.positions.extend_from_slice(&other.positions);
+        self.indices
+            .extend(other.indices.iter().map(|i| i + offset));
+        self.normals = None;
+    }
+
+    /// `true` when every directed edge is used exactly once and has an
+    /// opposite partner – i.e. the mesh is watertight and consistently
+    /// oriented.
+    pub fn is_closed(&self) -> bool {
+        let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in 0..self.tri_count() {
+            let [a, b, c] = self.triangle_idx(t);
+            for e in [(a, b), (b, c), (c, a)] {
+                *directed.entry(e).or_insert(0) += 1;
+            }
+        }
+        directed.values().all(|c| *c == 1)
+            && directed.keys().all(|(a, b)| directed.contains_key(&(*b, *a)))
+    }
+
+    /// Signed volume via the divergence theorem. Returns `None` if the mesh
+    /// is not closed. Requires consistent outward orientation (guaranteed
+    /// by all producers in this crate).
+    pub fn volume(&self) -> Option<f64> {
+        if !self.is_closed() {
+            return None;
+        }
+        Some(
+            self.triangles()
+                .map(|[a, b, c]| a.coords.dot(&b.coords.cross(&c.coords)) / 6.0)
+                .sum(),
+        )
+    }
+
+    /// Signed volume without the watertightness precondition. Exact for
+    /// valid solids whose seams contain only collinear T-junctions (the
+    /// BSP CSG output contract); used where [`Self::volume`] would refuse.
+    pub fn volume_signed(&self) -> f64 {
+        self.triangles()
+            .map(|[a, b, c]| a.coords.dot(&b.coords.cross(&c.coords)) / 6.0)
+            .sum()
+    }
+
+    /// Surface area.
+    pub fn area(&self) -> f64 {
+        self.triangles().map(|[a, b, c]| (b - a).cross(&(c - a)).norm() * 0.5).sum()
+    }
+
+    /// Centroid of the vertex cloud (not the volumetric centroid; good
+    /// enough for camera framing).
+    pub fn centroid(&self) -> Point3 {
+        if self.positions.is_empty() {
+            return Point3::origin();
+        }
+        let sum: Vector3 = self.positions.iter().map(|p| p.coords).sum();
+        Point3::from(sum / self.positions.len() as f64)
+    }
+
+    /// Boundary edges: directed edges without an opposite partner.
+    pub fn boundary_edges(&self) -> Vec<[u32; 2]> {
+        let mut directed: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in 0..self.tri_count() {
+            let [a, b, c] = self.triangle_idx(t);
+            for e in [(a, b), (b, c), (c, a)] {
+                *directed.entry(e).or_insert(0) += 1;
+            }
+        }
+        let keys: Vec<(u32, u32)> = directed.keys().copied().collect();
+        let mut out: Vec<[u32; 2]> = keys
+            .into_iter()
+            .filter(|(a, b)| !directed.contains_key(&(*b, *a)))
+            .map(|(a, b)| [a, b])
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Edges whose adjacent faces meet at more than `angle_tol` (radians)
+    /// – "sharp" feature edges – plus boundary edges. Used for crisp edge
+    /// line rendering.
+    pub fn sharp_edges(&self, angle_tol: f64) -> Vec<[u32; 2]> {
+        // Map undirected edge -> the two adjacent triangles (face normals).
+        let mut edge_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for t in 0..self.tri_count() {
+            let [a, b, c] = self.triangle_idx(t);
+            let key = |x: u32, y: u32| (x.min(y), x.max(y));
+            edge_faces.entry(key(a, b)).or_default().push(t);
+            edge_faces.entry(key(b, c)).or_default().push(t);
+            edge_faces.entry(key(c, a)).or_default().push(t);
+        }
+
+        let mut out = Vec::with_capacity(edge_faces.len());
+        for ((a, b), tris) in edge_faces {
+            let include = match tris.as_slice() {
+                [_] => true, // boundary edge
+                [t0, t1] => {
+                    let n0 = self.triangle_normal(*t0).unwrap_or(Vector3::z());
+                    let n1 = self.triangle_normal(*t1).unwrap_or(Vector3::z());
+                    n0.dot(&n1) < (angle_tol).cos()
+                }
+                _ => true, // non-manifold: draw it so it is visible
+            };
+            if include {
+                out.push([a, b]);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Turn a list of index edges into world-space segments.
+    pub fn edge_segments(&self, edges: &[[u32; 2]]) -> Vec<(Point3, Point3)> {
+        edges
+            .iter()
+            .filter_map(|[a, b]| {
+                let pa = self.positions.get(*a as usize)?;
+                let pb = self.positions.get(*b as usize)?;
+                Some((*pa, *pb))
+            })
+            .collect()
+    }
+
+    /// Weld vertices that are closer than `eps` and drop triangles that
+    /// collapse as a result. Keeps the first position of every cluster.
+    /// Normals are invalidated.
+    pub fn weld(&mut self, eps: f64) {
+        let inv = 1.0 / eps;
+        let mut cluster: HashMap<[i64; 3], u32> = HashMap::with_capacity(self.positions.len());
+        let mut remap = vec![0u32; self.positions.len()];
+        let mut new_positions: Vec<Point3> = Vec::with_capacity(self.positions.len());
+
+        for (i, p) in self.positions.iter().enumerate() {
+            let key = [
+                (p.x * inv).round() as i64,
+                (p.y * inv).round() as i64,
+                (p.z * inv).round() as i64,
+            ];
+            match cluster.get(&key) {
+                Some(dst) => remap[i] = *dst,
+                None => {
+                    let dst = new_positions.len() as u32;
+                    new_positions.push(*p);
+                    cluster.insert(key, dst);
+                    remap[i] = dst;
+                }
+            }
+        }
+
+        let mut new_indices = Vec::with_capacity(self.indices.len());
+        let base = self.indices.len() - self.indices.len() % 3;
+        let mut k = 0;
+        while k < base {
+            let a = remap[self.indices[k] as usize];
+            let b = remap[self.indices[k + 1] as usize];
+            let c = remap[self.indices[k + 2] as usize];
+            if a != b && b != c && a != c {
+                new_indices.extend_from_slice(&[a, b, c]);
+            }
+            k += 3;
+        }
+
+        self.positions = new_positions;
+        self.indices = new_indices;
+        self.normals = None;
+    }
+
+    /// Remove triangles whose area is below `eps_area`.
+    pub fn remove_degenerate(&mut self, eps_area: f64) {
+        let keep: Vec<bool> = (0..self.tri_count())
+            .map(|i| self.triangle_normal_raw(i).norm() * 0.5 > eps_area)
+            .collect();
+        let mut new_indices = Vec::with_capacity(self.indices.len());
+        for t in 0..self.tri_count() {
+            if keep[t] {
+                let k = t * 3;
+                new_indices.extend_from_slice(&self.indices[k..k + 3]);
+            }
+        }
+        self.indices = new_indices;
+        self.normals = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unit_box() -> TriMesh {
+        // Full extents (1, 1, 1): a 1×1×1 cube, volume 1, area 6.
+        crate::primitives::box_from_center_extents(Point3::origin(), Vector3::new(1.0, 1.0, 1.0))
+    }
+
+    #[test]
+    fn box_is_closed_with_correct_volume() {
+        let m = unit_box();
+        assert!(m.is_closed());
+        assert!((m.volume().unwrap() - 1.0).abs() < 1e-9);
+        assert!((m.area() - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normals_point_outward() {
+        let mut m = unit_box();
+        m.compute_vertex_normals();
+        let normals = m.normals.as_ref().unwrap();
+        // Every vertex of the half-extent box sits on a face; its normal must
+        // point away from the center in the dominant axis.
+        for (p, n) in m.positions.iter().zip(normals) {
+            let dominant = p.coords.iamax();
+            assert!(n[dominant] * p.coords[dominant].signum() > 0.4);
+        }
+    }
+
+    #[test]
+    fn weld_collapses_duplicate_vertices() {
+        let mut m = TriMesh::default();
+        // Two separate copies of one triangle -> welding yields one.
+        m.push_triangle(
+            Point3::origin(),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        m.push_triangle(
+            Point3::origin(),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        m.weld(WELD_EPS);
+        assert_eq!(m.vertex_count(), 3);
+        assert_eq!(m.tri_count(), 2); // triangles are kept, indices shared
+    }
+
+    #[test]
+    fn sharp_edges_of_a_box() {
+        let m = unit_box();
+        let sharp = m.sharp_edges(45.0_f64.to_radians());
+        assert_eq!(sharp.len(), 12, "a cube has 12 feature edges");
+        assert!(m.boundary_edges().is_empty());
+    }
+}

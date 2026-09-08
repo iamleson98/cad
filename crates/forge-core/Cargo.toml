@@ -1,0 +1,15 @@
+[package]
+name = "forge-core"
+description = "Shared foundation for ForgeCAD: math types, identifiers, units, errors, tessellation settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nalgebra = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = "0.5"

@@ -1,0 +1,21 @@
+[package]
+name = "forge-io"
+description = "Data interchange: STL/OBJ/glTF export, versioned native RON format, STEP interface (trait-gated)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+forge-core = { workspace = true }
+forge-geometry = { workspace = true }
+forge-model = { workspace = true }
+serde = { workspace = true }
+serde_json = "1.0"
+ron = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = "0.5"
+forge-sketch = { workspace = true }
