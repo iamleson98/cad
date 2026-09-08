@@ -139,6 +139,29 @@ impl System {
         }
     }
 
+    /// Ellipse parameters `(cx, cy, rx, ry, tilt)` for `Ellipse` and
+    /// `EllipseArc` (packed in this order at indices 0..5, S-03).
+    fn ellipse_params(&self, id: forge_core::EntityId) -> Option<(f64, f64, f64, f64, f64)> {
+        let e = self.entity(id)?;
+        match e {
+            SketchEntity::Ellipse {
+                center,
+                rx,
+                ry,
+                tilt,
+                ..
+            }
+            | SketchEntity::EllipseArc {
+                center,
+                rx,
+                ry,
+                tilt,
+                ..
+            } => Some((center.x, center.y, *rx, *ry, *tilt)),
+            _ => None,
+        }
+    }
+
     /// `∂r/∂params` as a row (1 at the radius parameter index).
     fn radius_row(&self, id: forge_core::EntityId) -> Vec<f64> {
         match self.param_span(id) {
@@ -545,6 +568,50 @@ fn build_equation(sys: &System, c: &Constraint) -> Option<Eq> {
                         j[(0, oc + k)] -= dv;
                     }
                 }
+            }
+        }
+        Constraint::PointOnEllipse {
+            a,
+            a_point,
+            ellipse,
+        } => {
+            // Implicit curve: F = (u/rx)^2 + (v/ry)^2 - 1 with
+            // (u, v) = R(-tilt) (P - C) (1 equation, S-03). Works for
+            // Ellipse and EllipseArc (same 0..5 packing).
+            let (pa, ja) = sys.point(*a, *a_point)?;
+            let (cx, cy, rx, ry, tilt) = sys.ellipse_params(*ellipse)?;
+            if rx.abs() < 1e-9 || ry.abs() < 1e-9 {
+                return None;
+            }
+            let (ct, st) = (tilt.cos(), tilt.sin());
+            let dx = pa.x - cx;
+            let dy = pa.y - cy;
+            let u = ct * dx + st * dy;
+            let v = -st * dx + ct * dy;
+            let irx = 1.0 / (rx * rx);
+            let iry = 1.0 / (ry * ry);
+            r[0] = u * u * irx + v * v * iry - 1.0;
+
+            // dF/dP = (2u/rx^2 * ct - 2v/ry^2 * st, 2u/rx^2 * st + 2v/ry^2 * ct)
+            let dfdx = 2.0 * (u * irx * ct - v * iry * st);
+            let dfdy = 2.0 * (u * irx * st + v * iry * ct);
+
+            let (oa, da) = sys.param_span(*a)?;
+            for (k, blk) in ja.iter().enumerate() {
+                if k < da {
+                    j[(0, oa + k)] += dfdx * blk[0] + dfdy * blk[1];
+                }
+            }
+            let (oe, dof) = sys.param_span(*ellipse)?;
+            if dof >= 5 {
+                // dF/dC = -dF/dP
+                j[(0, oe)] -= dfdx;
+                j[(0, oe + 1)] -= dfdy;
+                // dF/drx = -2u^2/rx^3, dF/dry = -2v^2/ry^3
+                j[(0, oe + 2)] -= 2.0 * u * u * irx / rx;
+                j[(0, oe + 3)] -= 2.0 * v * v * iry / ry;
+                // dF/dtilt = 2uv (1/rx^2 - 1/ry^2) (du/dt = v, dv/dt = -u)
+                j[(0, oe + 4)] += 2.0 * u * v * (irx - iry);
             }
         }
         Constraint::Symmetric {

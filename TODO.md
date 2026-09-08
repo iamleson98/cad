@@ -55,10 +55,27 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 
 ## Wave 2 — Sketch depth & modeling completeness
 
-- [ ] **S-03 Ellipse entity (native)** `(M)` `P1`
+- [x] **S-03 Ellipse entity (native)** `(M)` `P1`
       Center-ellipse with semi-axes + tilt: solver DOFs `[cx, cy, rx, ry,
       θ]`, ellipse-arc variant, contour sampling, point-on-ellipse
       constraint. Requires solver packing extension.
+      *Done: `SketchEntity::Ellipse` (5 DOF: `[cx, cy, rx, ry, tilt]`) +
+      `EllipseArc` (7 DOF: + `a0, a1`, CCW in the tilted frame —
+      parametric point `c + R(θ)·(rx cos a, ry sin a)`). Solver:
+      `PointOnEllipse` (1 eq) on the implicit curve
+      `(u/rx)² + (v/ry)² − 1` with the full analytic Jacobian
+      (dF/dP, dF/dC, −2u²/rx³, −2v²/ry³, 2uv(1/rx²−1/ry²)); Center and
+      Start/End roles carry exact Jacobians for arcs. Sampling: full
+      ellipses are standalone closed contours (tessellated sweep, mean
+      radius drives step count); ellipse arcs chain with lines/arcs.
+      Extrusion works end-to-end (volume ≈ π·rx·ry·h test). Mirror
+      (S-08 extension): tilt → 2φ−θ, arc params a → −a with role swap;
+      exact reflection verified per sampled point; constraint linkage
+      is center-symmetric (+ swapped endpoints for arcs) — a full
+      shape-linkage constraint kind is deferred (tilt wrap-around
+      equivalence needs dedicated handling). UI: palette "New Sketch:
+      ellipse on XY" (15×8, 30° tilt). 7 solver/geometry tests +
+      1 end-to-end extrude test.*
 - [x] **S-04 Remaining sketch constraints** `(S)` `P1`
       Symmetric (about line/point), midpoint-on, point-on-curve (arc/
       spline/ellipse), equal-radius already ok → add "equal length"

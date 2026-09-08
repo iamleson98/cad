@@ -116,6 +116,50 @@ impl Sketch {
         id
     }
 
+    /// Add a full ellipse (S-03): `rx` along the tilted x direction,
+    /// `ry` along the tilted y direction.
+    pub fn add_ellipse(&mut self, center: Point2, rx: f64, ry: f64, tilt: f64) -> EntityId {
+        let id = self.next_id();
+        self.entities.insert(
+            id,
+            SketchEntity::Ellipse {
+                id,
+                center,
+                rx,
+                ry,
+                tilt,
+            },
+        );
+        id
+    }
+
+    /// Add an elliptical arc (S-03), CCW from `start_angle` to
+    /// `end_angle` in the tilted frame.
+    pub fn add_ellipse_arc(
+        &mut self,
+        center: Point2,
+        rx: f64,
+        ry: f64,
+        tilt: f64,
+        start_angle: f64,
+        end_angle: f64,
+    ) -> EntityId {
+        let id = self.next_id();
+        self.entities.insert(
+            id,
+            SketchEntity::EllipseArc {
+                id,
+                center,
+                rx,
+                ry,
+                tilt,
+                start_angle,
+                end_angle,
+            },
+        );
+        id
+    }
+
     /// Add a spline through/over the control points.
     pub fn add_spline(&mut self, control: Vec<Point2>) -> EntityId {
         let id = self.next_id();
@@ -396,6 +440,45 @@ impl Sketch {
                         end_angle: 2.0 * phi - start_angle,
                     }
                 }
+                SketchEntity::Ellipse {
+                    center,
+                    rx,
+                    ry,
+                    tilt,
+                    ..
+                } => {
+                    // M R(θ) = R(2φ−θ) S, so the mirrored ellipse keeps
+                    // its semi-axes and tilts to 2φ−θ (S-03).
+                    SketchEntity::Ellipse {
+                        id: new_id,
+                        center: reflect(center),
+                        rx: *rx,
+                        ry: *ry,
+                        tilt: 2.0 * phi - tilt,
+                    }
+                }
+                SketchEntity::EllipseArc {
+                    center,
+                    rx,
+                    ry,
+                    tilt,
+                    start_angle,
+                    end_angle,
+                    ..
+                } => {
+                    // Same tilt mapping as the full ellipse; the
+                    // parametrization reflects a -> −a, so the CCW arc
+                    // [a0, a1] becomes [−a1, −a0] (roles swap, S-03).
+                    SketchEntity::EllipseArc {
+                        id: new_id,
+                        center: reflect(center),
+                        rx: *rx,
+                        ry: *ry,
+                        tilt: 2.0 * phi - tilt,
+                        start_angle: -end_angle,
+                        end_angle: -start_angle,
+                    }
+                }
                 SketchEntity::Spline { control, .. } => SketchEntity::Spline {
                     id: new_id,
                     control: control.iter().map(&reflect).collect(),
@@ -452,6 +535,45 @@ impl Sketch {
                         line: mirror,
                     });
                     self.constraints.push(C::EqualRadius { a: id, b: new_id });
+                }
+                // Ellipses: the center stays symmetric (2 of the 5 DOF
+                // linked). A full shape-linkage constraint kind
+                // (equal semi-axes + tilt) is deliberately deferred —
+                // the tilt has wrap-around equivalence classes that
+                // need dedicated handling (documented in TODO.md).
+                (SketchEntity::Ellipse { .. }, SketchEntity::Ellipse { .. }) => {
+                    self.constraints.push(C::Symmetric {
+                        a: id,
+                        a_point: PointRole::Center,
+                        b: new_id,
+                        b_point: PointRole::Center,
+                        line: mirror,
+                    });
+                }
+                // Ellipse arcs: center symmetric + endpoint roles
+                // swapped (4 of the 7 DOF linked).
+                (SketchEntity::EllipseArc { .. }, SketchEntity::EllipseArc { .. }) => {
+                    self.constraints.push(C::Symmetric {
+                        a: id,
+                        a_point: PointRole::Center,
+                        b: new_id,
+                        b_point: PointRole::Center,
+                        line: mirror,
+                    });
+                    self.constraints.push(C::Symmetric {
+                        a: id,
+                        a_point: PointRole::Start,
+                        b: new_id,
+                        b_point: PointRole::End,
+                        line: mirror,
+                    });
+                    self.constraints.push(C::Symmetric {
+                        a: id,
+                        a_point: PointRole::End,
+                        b: new_id,
+                        b_point: PointRole::Start,
+                        line: mirror,
+                    });
                 }
                 (SketchEntity::Spline { .. }, SketchEntity::Spline { .. }) => {}
                 _ => unreachable!("mirror preserves the entity kind"),
@@ -520,12 +642,61 @@ impl Sketch {
                 let n = cfg.steps_for_arc(*radius, end - *start_angle);
                 Some(arc_points(*center, *radius, *start_angle, end, n))
             }
+            SketchEntity::Ellipse { .. } => {
+                if let Some(pts) = self.entity_polyline_inner(id, cfg) {
+                    // Full ellipses are closed: wrap around to the start.
+                    let mut closed = pts;
+                    if let Some(first) = closed.first().copied() {
+                        closed.push(first);
+                    }
+                    Some(closed)
+                } else {
+                    None
+                }
+            }
+            SketchEntity::EllipseArc { .. } => self.entity_polyline_inner(id, cfg),
             SketchEntity::Spline { control, .. } => {
                 let samples = control.len() * 8;
                 Some(crate::nurbs::sample(control, samples))
             }
             SketchEntity::Point { .. } => None,
         }
+    }
+
+    /// Parametric sweep of an ellipse-shaped entity over its angle
+    /// range (S-03). Full ellipses sweep `[0, TAU)`; arcs sweep
+    /// `[start, end]` (CCW-normalized like `Arc`).
+    fn entity_polyline_inner(&self, id: EntityId, cfg: &TessellationConfig) -> Option<Vec<Point2>> {
+        let (center, rx, ry, tilt, a0, a1) = match self.entities.get(&id)? {
+            SketchEntity::Ellipse {
+                center,
+                rx,
+                ry,
+                tilt,
+                ..
+            } => (*center, *rx, *ry, *tilt, 0.0, std::f64::consts::TAU),
+            SketchEntity::EllipseArc {
+                center,
+                rx,
+                ry,
+                tilt,
+                start_angle,
+                end_angle,
+                ..
+            } => {
+                let mut end = *end_angle;
+                while end <= *start_angle {
+                    end += std::f64::consts::TAU;
+                }
+                (*center, *rx, *ry, *tilt, *start_angle, end)
+            }
+            _ => return None,
+        };
+        // Arc-length-ish step count from the mean radius.
+        let n = cfg
+            .steps_for_arc(0.5 * (rx.abs() + ry.abs()), a1 - a0)
+            .max(8);
+        Some(ellipse_points(center, rx, ry, tilt, a0, a1, n))
     }
 
     /// Extract closed contours from the sketch for profile operations
@@ -538,23 +709,34 @@ impl Sketch {
         const JOIN_EPS: f64 = 1e-7;
         let mut contours: Vec<Vec<Point2>> = Vec::new();
 
-        // Standalone circles are their own contours.
+        // Standalone circles and full ellipses are their own contours.
         for (id, e) in &self.entities {
-            if let SketchEntity::Circle { center, radius, .. } = e {
-                let pts = forge_geometry_lite_circle(*center, *radius, cfg);
-                let _ = id;
-                contours.push(pts);
+            match e {
+                SketchEntity::Circle { center, radius, .. } => {
+                    let pts = forge_geometry_lite_circle(*center, *radius, cfg);
+                    let _ = id;
+                    contours.push(pts);
+                }
+                SketchEntity::Ellipse { .. } => {
+                    if let Some(pts) = self.entity_polyline(*id, cfg) {
+                        contours.push(pts);
+                    }
+                }
+                _ => {}
             }
         }
 
-        // Chain open polylines (lines, arcs, splines) by endpoints.
+        // Chain open polylines (lines, arcs, ellipse arcs, splines) by
+        // endpoints.
         let mut segments: Vec<(Point2, Point2, Vec<Point2>)> = Vec::new(); // (start, end, pts)
         for (id, e) in &self.entities {
             match e {
                 SketchEntity::Line { start, end, .. } => {
                     segments.push((*start, *end, vec![*start, *end]));
                 }
-                SketchEntity::Arc { .. } | SketchEntity::Spline { .. } => {
+                SketchEntity::Arc { .. }
+                | SketchEntity::EllipseArc { .. }
+                | SketchEntity::Spline { .. } => {
                     if let Some(pts) = self.entity_polyline(*id, cfg) {
                         if pts.len() >= 2 {
                             segments.push((*pts.first().unwrap(), *pts.last().unwrap(), pts));
@@ -652,6 +834,236 @@ fn arc_points(center: Point2, radius: f64, start: f64, end: f64, n: usize) -> Ve
             Point2::new(center.x + radius * a.cos(), center.y + radius * a.sin())
         })
         .collect()
+}
+
+/// Parametric sweep of an ellipse over `[start, end]` (S-03):
+/// `p(a) = center + R(tilt) * (rx cos a, ry sin a)`.
+fn ellipse_points(
+    center: Point2,
+    rx: f64,
+    ry: f64,
+    tilt: f64,
+    start: f64,
+    end: f64,
+    n: usize,
+) -> Vec<Point2> {
+    let n = n.max(1);
+    let (ct, st) = (tilt.cos(), tilt.sin());
+    (0..=n)
+        .map(|k| {
+            let t = k as f64 / n as f64;
+            let a = start + (end - start) * t;
+            let (ca, sa) = (a.cos(), a.sin());
+            Point2::new(
+                center.x + ct * rx * ca - st * ry * sa,
+                center.y + st * rx * ca + ct * ry * sa,
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod ellipse_tests {
+    use super::*;
+    use crate::constraint::Constraint;
+    use crate::entity::SketchEntity;
+    use crate::PointRole;
+
+    fn plane() -> SketchPlane {
+        SketchPlane::default()
+    }
+
+    fn implicit(s: &Sketch, e: EntityId, p: Point2) -> f64 {
+        s.entities
+            .get(&e)
+            .and_then(|ent| ent.ellipse_implicit(p))
+            .expect("ellipse entity")
+    }
+
+    /// A fresh ellipse packs 5 DOFs and the solver reports them.
+    #[test]
+    fn ellipse_dof_balance() {
+        let mut s = Sketch::new(SketchId::new(1), "e", plane());
+        s.add_ellipse(Point2::origin(), 15.0, 8.0, 0.5);
+        let report = s.solve().expect("solve");
+        assert_eq!(report.dof, 5);
+        assert_eq!(report.equations, 0);
+        // MaxIterations is the expected status for a DOF-positive sketch.
+    }
+
+    /// PointOnEllipse: a perturbed point snaps back onto the curve.
+    #[test]
+    fn point_on_ellipse_solves() {
+        let mut s = Sketch::new(SketchId::new(2), "poe", plane());
+        let ellipse = s.add_ellipse(Point2::new(1.0, -2.0), 15.0, 8.0, 0.7);
+        // A point on the curve at parameter a = 0.9.
+        let (ct, st) = (0.7f64.cos(), 0.7f64.sin());
+        let (ca, sa) = (0.9f64.cos(), 0.9f64.sin());
+        let on_curve = Point2::new(
+            1.0 + ct * 15.0 * ca - st * 8.0 * sa,
+            -2.0 + st * 15.0 * ca + ct * 8.0 * sa,
+        );
+        // Perturb radially outward (in the ellipse frame).
+        let p = s.add_point(Point2::new(on_curve.x + 2.0, on_curve.y - 1.0));
+        s.add_constraint(Constraint::PointOnEllipse {
+            a: p,
+            a_point: PointRole::Start,
+            ellipse,
+        });
+        let report = s.solve().expect("solve");
+        assert!(
+            report.is_solved(),
+            "status {:?} residual {}",
+            report.status,
+            report.residual
+        );
+        let pp = s.entities.get(&p).unwrap();
+        let SketchEntity::Point { p: pos, .. } = pp else {
+            unreachable!()
+        };
+        assert!(
+            implicit(&s, ellipse, *pos).abs() < 1e-9,
+            "point not on the ellipse: {}",
+            implicit(&s, ellipse, *pos)
+        );
+    }
+
+    /// DOF arithmetic: ellipse (5) + point (2) - point-on-ellipse (1)
+    /// leaves 6 DOF.
+    #[test]
+    fn point_on_ellipse_dof_arithmetic() {
+        let mut s = Sketch::new(SketchId::new(3), "poedof", plane());
+        let ellipse = s.add_ellipse(Point2::origin(), 10.0, 4.0, 0.3);
+        let p = s.add_point(Point2::new(9.0, 1.0));
+        s.add_constraint(Constraint::PointOnEllipse {
+            a: p,
+            a_point: PointRole::Start,
+            ellipse,
+        });
+        let report = s.solve().expect("solve");
+        assert_eq!(report.dof, 7);
+        assert_eq!(report.equations, 1);
+        // Under-constrained: least-squares result, point ON the curve.
+        let SketchEntity::Point { p: pos, .. } = s.entities.get(&p).unwrap() else {
+            unreachable!()
+        };
+        assert!(implicit(&s, ellipse, *pos).abs() < 1e-6);
+    }
+
+    /// A standalone full ellipse forms one closed contour whose polygon
+    /// area approximates pi*rx*ry.
+    #[test]
+    fn ellipse_contour_area() {
+        let mut s = Sketch::new(SketchId::new(4), "area", plane());
+        s.add_ellipse(Point2::origin(), 15.0, 8.0, 0.4);
+        let cfg = TessellationConfig::default();
+        let contours = s.profile_contours(&cfg);
+        assert_eq!(contours.len(), 1, "one closed contour");
+        let pts = &contours[0];
+        assert!(pts.len() > 16, "tessellated: {} pts", pts.len());
+        assert!((pts.first().unwrap() - pts.last().unwrap()).norm() < 1e-12);
+        // Shoelace area.
+        let mut area = 0.0;
+        for k in 0..pts.len() {
+            let a = pts[k];
+            let b = pts[(k + 1) % pts.len()];
+            area += a.x * b.y - b.x * a.y;
+        }
+        let area = (area * 0.5).abs();
+        let want = std::f64::consts::PI * 15.0 * 8.0;
+        assert!(
+            (area - want).abs() / want < 0.01,
+            "polygon area {area:.4} vs ellipse {want:.4}"
+        );
+    }
+
+    /// Ellipse-arc polylines start/end at the parametric points.
+    #[test]
+    fn ellipse_arc_polyline_endpoints() {
+        let mut s = Sketch::new(SketchId::new(5), "earc", plane());
+        let c = Point2::new(2.0, 3.0);
+        let (rx, ry, tilt, a0, a1) = (10.0, 5.0, 0.6, 0.3, 1.9);
+        let id = s.add_ellipse_arc(c, rx, ry, tilt, a0, a1);
+        let cfg = TessellationConfig::default();
+        let contours = s.profile_contours(&cfg);
+        assert_eq!(contours.len(), 1);
+        let pts = &contours[0];
+        let want_start = ellipse_points(c, rx, ry, tilt, a0, a0, 1)[0];
+        let want_end = ellipse_points(c, rx, ry, tilt, a1, a1, 1)[1];
+        assert!((pts[0] - want_start).norm() < 1e-9);
+        assert!((*pts.last().unwrap() - want_end).norm() < 1e-9);
+        // Mid points sit on the implicit curve.
+        for p in pts.iter().step_by(7) {
+            assert!(implicit(&s, id, *p).abs() < 1e-9);
+        }
+    }
+
+    /// Mirroring a full ellipse reflects every curve point exactly
+    /// (tilt -> 2*phi - tilt, radii unchanged, center reflected).
+    #[test]
+    fn mirror_ellipse_exactness() {
+        let mut s = Sketch::new(SketchId::new(6), "mir", plane());
+        let mirror = s.add_line(Point2::new(0.0, 0.0), Point2::new(4.0, 2.0));
+        let c = Point2::new(3.0, 1.0);
+        let (rx, ry, tilt) = (12.0, 5.0, 0.8);
+        let e = s.add_ellipse(c, rx, ry, tilt);
+        let created = s.mirror_entities(&[e], mirror).expect("mirror");
+        let m = created[0];
+        let (m0, m1) = match s.entities.get(&mirror) {
+            Some(SketchEntity::Line { start, end, .. }) => (*start, *end),
+            _ => unreachable!(),
+        };
+        let d = (m1 - m0).normalize();
+        let reflect = |p: &Point2| {
+            let dd = *p - m0;
+            m0 + d * (2.0 * dd.dot(&d)) - dd
+        };
+        // Every sampled point of the original reflects onto the mirrored
+        // implicit curve.
+        for a in [0.0_f64, 0.7, 1.6, 2.9, 4.4, 5.7] {
+            let p = ellipse_points(c, rx, ry, tilt, a, a, 1)[0];
+            let reflected = reflect(&p);
+            assert!(
+                implicit(&s, m, reflected).abs() < 1e-9,
+                "reflected point at a={a} not on mirrored ellipse: {}",
+                implicit(&s, m, reflected)
+            );
+        }
+        // The mirror constraint set links the centers (2 of 5 DOF).
+        assert_eq!(s.constraints.len(), 1);
+    }
+
+    /// Mirroring an ellipse arc: role-swapped parametrization with
+    /// a -> -a in the (untilted) frame, endpoints reflect exactly.
+    #[test]
+    fn mirror_ellipse_arc_exactness() {
+        let mut s = Sketch::new(SketchId::new(7), "mira", plane());
+        let mirror = s.add_line(Point2::origin(), Point2::new(0.0, 5.0)); // y axis
+        let c = Point2::new(2.0, 1.0);
+        let (rx, ry, tilt, a0, a1) = (9.0, 4.0, 0.35, 0.2, 2.4);
+        let e = s.add_ellipse_arc(c, rx, ry, tilt, a0, a1);
+        let created = s.mirror_entities(&[e], mirror).expect("mirror");
+        let m = created[0];
+        let reflect = |p: &Point2| Point2::new(-p.x, p.y);
+        let start = ellipse_points(c, rx, ry, tilt, a0, a0, 1)[0];
+        let end = ellipse_points(c, rx, ry, tilt, a1, a1, 1)[1];
+        // The mirrored arc's Start is the reflection of the original End.
+        let SketchEntity::EllipseArc {
+            start_angle: ms,
+            end_angle: me,
+            tilt: mt,
+            center: mc,
+            ..
+        } = s.entities.get(&m).unwrap().clone()
+        else {
+            unreachable!()
+        };
+        assert!((mc - reflect(&c)).norm() < 1e-12);
+        let new_start = ellipse_points(reflect(&c), rx, ry, mt, ms, ms, 1)[0];
+        let new_end = ellipse_points(reflect(&c), rx, ry, mt, me, me, 1)[1];
+        assert!((new_start - reflect(&end)).norm() < 1e-9);
+        assert!((new_end - reflect(&start)).norm() < 1e-9);
+    }
 }
 
 #[cfg(test)]

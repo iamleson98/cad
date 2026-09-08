@@ -182,6 +182,18 @@ pub enum Constraint {
         /// The circle/arc the point lies on.
         circle: EntityId,
     },
+    /// A point constrained to lie on an ellipse or elliptical arc
+    /// (1 equation, S-03): the implicit curve value
+    /// `(u/rx)^2 + (v/ry)^2 - 1` vanishes for the point offset rotated
+    /// into the ellipse frame.
+    PointOnEllipse {
+        /// Entity carrying the point.
+        a: EntityId,
+        /// Point on the entity.
+        a_point: PointRole,
+        /// The ellipse the point lies on.
+        ellipse: EntityId,
+    },
 }
 
 impl Constraint {
@@ -218,6 +230,7 @@ impl Constraint {
             Constraint::Symmetric { .. } => "Symmetric".into(),
             Constraint::MidpointOn { .. } => "Midpoint on line".into(),
             Constraint::PointOnCircle { .. } => "Point on circle".into(),
+            Constraint::PointOnEllipse { .. } => "Point on ellipse".into(),
         }
     }
 
@@ -242,6 +255,7 @@ impl Constraint {
             Symmetric { a, b, line, .. } => vec![*a, *b, *line],
             MidpointOn { a, line, .. } => vec![*a, *line],
             PointOnCircle { a, circle, .. } => vec![*a, *circle],
+            PointOnEllipse { a, ellipse, .. } => vec![*a, *ellipse],
         }
     }
 }

@@ -2294,3 +2294,50 @@ mod tests {
         let _ = id;
     }
 }
+
+#[cfg(test)]
+mod ellipse_extrude_tests {
+    use super::*;
+    use crate::{ExtrudeOp, ExtrudeParams};
+    use forge_core::{Point2, SketchId};
+    use forge_geometry::ExtrudeDirection;
+    use forge_sketch::{DatumPlane, Sketch};
+
+    /// S-03 end-to-end: extruding a native ellipse yields a body whose
+    /// volume approximates pi*rx*ry*h (tessellation-limited accuracy).
+    #[test]
+    fn extruded_ellipse_volume() {
+        let mut doc = Document::new("ellipse");
+        let mut sketch = Sketch::new(
+            SketchId::new(1),
+            "e",
+            SketchPlane::Datum {
+                datum: DatumPlane::XY,
+            },
+        );
+        sketch.add_ellipse(Point2::origin(), 12.0, 7.0, 0.4);
+        let sketch_id = doc.add_feature(Feature::Sketch(sketch)).unwrap();
+        let h = 4.0;
+        doc.add_feature(Feature::Extrude(ExtrudeParams {
+            profile: sketch_id,
+            distance: h,
+            direction: ExtrudeDirection::Positive,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+            draft_angle: 0.0,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let v = result.bodies[0].mesh.volume_signed();
+        let want = std::f64::consts::PI * 12.0 * 7.0 * h;
+        // Polygonal approximation of the ellipse undershoots slightly;
+        // default tessellation keeps it well inside 1%.
+        assert!(
+            (v - want).abs() / want < 0.01,
+            "volume {v:.4} vs pi*rx*ry*h {want:.4}"
+        );
+    }
+}

@@ -88,6 +88,12 @@ pub fn entries() -> Vec<PaletteEntry> {
             action: NewSketchHexXY,
         },
         PaletteEntry {
+            label: "New Sketch: ellipse on XY",
+            keywords: "sketch draw ellipse oval conic tilted",
+            icon: icons::ELLIPSE,
+            action: NewSketchEllipseXY,
+        },
+        PaletteEntry {
             label: "New datum plane: XY + 20 mm offset",
             keywords: "datum plane offset reference construction",
             icon: icons::DATUM,
@@ -367,6 +373,7 @@ pub enum PaletteAction {
     NewSketchXZ,
     NewSketchSlotXY,
     NewSketchHexXY,
+    NewSketchEllipseXY,
     NewDatumOffsetXY,
     NewDatumAngleXY,
     NewSketchOnLatestDatum,
@@ -460,6 +467,7 @@ impl PaletteAction {
             NewSketchXZ => app.add_sketch_rect(DatumPlane::XZ),
             NewSketchSlotXY => app.add_sketch_slot(DatumPlane::XY),
             NewSketchHexXY => app.add_sketch_polygon(DatumPlane::XY, 6),
+            NewSketchEllipseXY => app.add_sketch_ellipse(DatumPlane::XY),
 
             NewDatumOffsetXY => app.add_datum(DatumParams::Offset {
                 base: DatumPlane::XY,
@@ -686,6 +694,25 @@ impl ForgeApp {
                         .execute(Command::AddFeature { node }, &mut self.doc);
                 }
                 self.set_status("Slot sketch created (tangent, fully parametric)");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Add a sketch with a native ellipse (S-03) on a datum plane.
+    pub(crate) fn add_sketch_ellipse(&mut self, datum: DatumPlane) {
+        let sketch_id = SketchId::new(self.doc.allocator.next_id());
+        let mut sketch = Sketch::new(sketch_id, "ellipse", SketchPlane::Datum { datum });
+        sketch.add_ellipse(Point2::origin(), 15.0, 8.0, 30_f64.to_radians());
+        match self.doc.add_feature(Feature::Sketch(sketch.clone())) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(Command::AddFeature { node }, &mut self.doc);
+                }
+                self.set_status("Ellipse sketch created (5 DOF — constrain as needed)");
                 self.request_evaluation();
             }
             Err(e) => self.set_status(format!("{e}")),

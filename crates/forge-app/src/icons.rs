@@ -99,6 +99,9 @@ pub const PLUS: char = '\u{e141}';
 /// lucide "pencil-ruler"
 pub const SKETCH: char = '\u{e4f6}';
 
+/// lucide "egg"
+pub const ELLIPSE: char = '\u{e25d}';
+
 /// lucide "square-pen"
 pub const SKETCH_ON_FACE: char = '\u{e176}';
 
@@ -291,6 +294,7 @@ pub const ALL: &[char] = &[
     TORUS,
     PLUS,
     SKETCH,
+    ELLIPSE,
     SKETCH_ON_FACE,
     EXTRUDE,
     DRILL,

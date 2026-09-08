@@ -35,6 +35,9 @@ ICONS: dict[str, str] = {
     # creation
     "PLUS": "plus",
     "SKETCH": "pencil-ruler",
+    # lucide has no "ellipse" glyph in this build; "egg" is the
+    # ellipse-shaped one (closest semantic match).
+    "ELLIPSE": "egg",
     "SKETCH_ON_FACE": "square-pen",
     "EXTRUDE": "arrow-up-from-line",
     "DRILL": "circle-minus",
