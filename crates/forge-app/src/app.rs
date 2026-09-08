@@ -49,6 +49,8 @@ pub struct ForgeApp {
     pub eval_worker: EvalWorker,
     /// Last completed evaluation.
     pub last_evaluation: Option<Evaluation>,
+    /// Wall duration of the last completed evaluation (PR-05).
+    pub last_eval_duration: Option<std::time::Duration>,
     /// Whether an evaluation request is in flight.
     pub eval_pending: bool,
     /// Suppress duplicate eval requests during a single frame.
@@ -115,7 +117,8 @@ pub struct ForgeApp {
     imported_paths: std::collections::HashSet<PathBuf>,
 
     /// FPS estimate.
-    frame_times: Vec<f32>,
+    /// Rolling frame-time samples (PR-05 status stats).
+    pub frame_times: Vec<f32>,
 }
 
 impl ForgeApp {
@@ -134,20 +137,46 @@ impl ForgeApp {
         let mut doc = Document::new("untitled");
         let mut status = String::from("Welcome to ForgeCAD — Ctrl+Shift+P for the command palette");
 
-        // Crash recovery (NFR-RES-03): restore the last autosave if any.
-        if autosave_path.exists() {
-            match forge_io::load_document(&autosave_path) {
+        // Crash recovery (NFR-RES-03 + PR-01): restore the freshest of
+        // the crash snapshot (refreshed after every mutation) and the
+        // 2-minute autosave.
+        let crash_snapshot = crate::crash::latest_snapshot();
+        let crash_newer = crash_snapshot
+            .as_ref()
+            .and_then(|p| p.metadata().ok().and_then(|m| m.modified().ok()))
+            .zip(
+                autosave_path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok()),
+            )
+            .map(|(c, a)| c > a)
+            .unwrap_or(false);
+        let recovery_source = if crash_newer {
+            crash_snapshot
+        } else if autosave_path.exists() {
+            Some(autosave_path.clone())
+        } else {
+            None
+        };
+        if let Some(path) = recovery_source {
+            let source = if crash_newer {
+                "crash snapshot"
+            } else {
+                "autosave"
+            };
+            match forge_io::load_document(&path) {
                 Ok(recovered) => {
                     doc = recovered;
                     status = format!(
-                        "Recovered autosaved document \"{}\" ({} features)",
+                        "Recovered \"{}\" from {source} ({} features)",
                         doc.name,
                         doc.tree.len()
                     );
                     doc.modified = true;
                 }
                 Err(e) => {
-                    status = format!("Autosave found but unreadable: {e}");
+                    status = format!("{source} found but unreadable: {e}");
                 }
             }
         }
@@ -170,6 +199,7 @@ impl ForgeApp {
             renderer,
             eval_worker: EvalWorker::spawn(),
             last_evaluation: None,
+            last_eval_duration: None,
             eval_pending: false,
             eval_requested_this_frame: false,
             last_sketch_report: None,
@@ -219,6 +249,9 @@ impl ForgeApp {
             return;
         }
         self.eval_requested_this_frame = true;
+        // PR-01: freshest-possible crash recovery — the snapshot is the
+        // parametric data only (no meshes), so this is cheap.
+        crate::crash::snapshot_document(&self.doc);
         let doc = self.doc.clone();
         if self.eval_worker.tx.send(EvalRequest::Evaluate(doc)).is_ok() {
             self.eval_pending = true;
@@ -229,9 +262,10 @@ impl ForgeApp {
     fn poll_evaluation(&mut self) {
         while let Ok(response) = self.eval_worker.rx.try_recv() {
             match response {
-                EvalResponse::Done(ev) => {
+                EvalResponse::Done(ev, duration) => {
                     self.eval_pending = false;
                     self.last_evaluation = Some(ev);
+                    self.last_eval_duration = Some(duration);
                     self.measure_bvhs_stale = true;
                     self.rebuild_scene();
                 }
@@ -374,9 +408,10 @@ impl ForgeApp {
         });
     }
 
-    /// Kick off a background mesh import (I-01): parse + weld + repair on a
-    /// blocking thread; the finished mesh arrives via `import_rx` and is
-    /// added to the feature tree in [`Self::poll_imports`].
+    /// Kick off a background mesh import (I-01/I-02): parse + weld +
+    /// repair on a blocking thread; the finished meshes arrive via
+    /// `import_rx` and are added to the feature tree in
+    /// [`Self::poll_imports`].
     pub fn import_file(&mut self, path: PathBuf) {
         let ext = path
             .extension()
@@ -384,7 +419,7 @@ impl ForgeApp {
             .and_then(forge_io::ImportFormat::from_extension);
         let Some(format) = ext else {
             self.set_status(format!(
-                "Unsupported import format: {} (use .stl or .obj)",
+                "Unsupported import format: {} (use .stl, .obj or .3mf)",
                 path.display()
             ));
             return;
@@ -392,40 +427,55 @@ impl ForgeApp {
         let import_tx = self.import_tx.clone();
         self.set_status(format!("Importing {}…", path.display()));
         self.tokio_rt.spawn_blocking(move || {
-            let result = forge_io::import_mesh(format, &path).map_err(|e| format!("{e}"));
+            let result = forge_io::import_meshes(format, &path).map_err(|e| format!("{e}"));
             let _ = import_tx.send(ImportDone { path, result });
         });
     }
 
-    /// Add a finished import as an `ImportedMesh` feature (I-01).
-    fn add_imported_mesh(&mut self, path: &std::path::Path, mesh: forge_geometry::TriMesh) {
-        let source = path
+    /// Add finished imports as `ImportedMesh` features (I-01; one per
+    /// object for multi-object 3MF files, I-02).
+    fn add_imported_meshes(
+        &mut self,
+        path: &std::path::Path,
+        meshes: Vec<(String, forge_geometry::TriMesh)>,
+    ) {
+        let file_stem = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("mesh")
             .to_string();
-        let feature =
-            forge_model::Feature::ImportedMesh(forge_model::ImportedMeshParams { source, mesh });
-        match self.doc.add_feature(feature.clone()) {
-            Ok(id) => {
-                if let Some(node) = self.doc.tree.get(id).cloned() {
-                    let _ = self
-                        .commands
-                        .execute(forge_model::Command::AddFeature { node }, &mut self.doc);
+        let multi = meshes.len() > 1;
+        let mut added = 0usize;
+        for (object_name, mesh) in meshes {
+            // Single-object imports keep the plain file name; multi-object
+            // 3MFs get "file:object" so the tree stays readable.
+            let source = if multi {
+                format!("{file_stem}:{object_name}")
+            } else {
+                file_stem.clone()
+            };
+            let feature = forge_model::Feature::ImportedMesh(forge_model::ImportedMeshParams {
+                source,
+                mesh,
+            });
+            match self.doc.add_feature(feature.clone()) {
+                Ok(id) => {
+                    if let Some(node) = self.doc.tree.get(id).cloned() {
+                        let _ = self
+                            .commands
+                            .execute(forge_model::Command::AddFeature { node }, &mut self.doc);
+                    }
+                    added += 1;
+                    self.request_evaluation();
                 }
-                if let Some(label) = self
-                    .doc
-                    .tree
-                    .order()
-                    .last()
-                    .and_then(|id| self.doc.tree.get(*id))
-                    .map(|n| n.feature.label())
-                {
-                    self.set_status(format!("Imported {label}"));
-                }
-                self.request_evaluation();
+                Err(e) => self.set_status(format!("{e}")),
             }
-            Err(e) => self.set_status(format!("{e}")),
+        }
+        if added > 0 {
+            self.set_status(format!(
+                "Imported {added} bod{} from {file_stem}",
+                if added == 1 { "y" } else { "ies" }
+            ));
         }
     }
 
@@ -433,7 +483,7 @@ impl ForgeApp {
     fn poll_imports(&mut self) {
         while let Ok(done) = self.import_rx.try_recv() {
             match done.result {
-                Ok(mesh) => self.add_imported_mesh(&done.path, mesh),
+                Ok(meshes) => self.add_imported_meshes(&done.path, meshes),
                 Err(e) => self.set_status(format!("Import {} failed: {e}", done.path.display())),
             }
         }

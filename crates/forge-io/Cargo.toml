@@ -15,6 +15,7 @@ serde_json = "1.0"
 ron = { workspace = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
+miniz_oxide = "0.8"
 
 [dev-dependencies]
 approx = "0.5"

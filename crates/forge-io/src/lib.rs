@@ -2,8 +2,9 @@
 //!
 //! Data interchange for ForgeCAD:
 //! - [`stl`] – STL ASCII + binary, read and write
-//! - [`obj`] – OBJ write
+//! - [`obj`] – OBJ write + read
 //! - [`gltf`] – glTF 2.0 write (embedded buffer)
+//! - [`threemf`] – 3MF read + write (I-02, production 3D-print format)
 //! - [`native`] – versioned RON serialization of the parametric document
 //! - [`step`] – STEP interface (trait-gated, Phase-6 roadmap)
 //!
@@ -15,6 +16,7 @@ pub mod native;
 pub mod obj;
 pub mod step;
 pub mod stl;
+pub mod threemf;
 
 pub use native::{load_document, save_document};
 pub use step::{StepFormat, STEP_EXTENSIONS};
@@ -60,6 +62,8 @@ pub enum ExportFormat {
     Obj,
     /// glTF 2.0 (embedded buffer).
     Gltf,
+    /// 3MF (I-02: OPC/ZIP package, the 3D-print production format).
+    ThreeMf,
 }
 
 impl ExportFormat {
@@ -69,17 +73,20 @@ impl ExportFormat {
             ExportFormat::Stl => "stl",
             ExportFormat::Obj => "obj",
             ExportFormat::Gltf => "gltf",
+            ExportFormat::ThreeMf => "3mf",
         }
     }
 }
 
-/// Supported import formats (I-01: mesh bodies from interchange files).
+/// Supported import formats (I-01/I-02: mesh bodies from interchange files).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportFormat {
     /// STL (binary or ASCII, auto-detected).
     Stl,
     /// Wavefront OBJ.
     Obj,
+    /// 3MF (I-02: all mesh objects of the package, transforms applied).
+    ThreeMf,
 }
 
 impl ImportFormat {
@@ -88,6 +95,7 @@ impl ImportFormat {
         match ext.to_ascii_lowercase().as_str() {
             "stl" => Some(ImportFormat::Stl),
             "obj" => Some(ImportFormat::Obj),
+            "3mf" => Some(ImportFormat::ThreeMf),
             _ => None,
         }
     }
@@ -97,6 +105,7 @@ impl ImportFormat {
         match self {
             ImportFormat::Stl => "stl",
             ImportFormat::Obj => "obj",
+            ImportFormat::ThreeMf => "3mf",
         }
     }
 }
@@ -112,6 +121,16 @@ pub fn import_mesh(
     format: ImportFormat,
     path: &std::path::Path,
 ) -> Result<forge_geometry::TriMesh> {
+    import_meshes(format, path).map(|mut all| all.remove(0).1)
+}
+
+/// Import every mesh of a file (I-02: 3MF packages may hold several
+/// objects; STL/OBJ yield one). Same repair pipeline as
+/// [`import_mesh`].
+pub fn import_meshes(
+    format: ImportFormat,
+    path: &std::path::Path,
+) -> Result<Vec<(String, forge_geometry::TriMesh)>> {
     if !path.is_file() {
         return Err(IoError::Malformed(format!(
             "file not found: {}",
@@ -119,8 +138,9 @@ pub fn import_mesh(
         )));
     }
     match format {
-        ImportFormat::Stl => stl::read_stl(path),
-        ImportFormat::Obj => obj::read_obj(path),
+        ImportFormat::Stl => stl::read_stl(path).map(|m| vec![("mesh".into(), m)]),
+        ImportFormat::Obj => obj::read_obj(path).map(|m| vec![("mesh".into(), m)]),
+        ImportFormat::ThreeMf => threemf::read_3mf(path),
     }
 }
 
@@ -133,5 +153,6 @@ pub fn export(format: ExportFormat, path: &std::path::Path, meshes: &[ExportMesh
         ExportFormat::Stl => stl::write_binary_stl(path, meshes),
         ExportFormat::Obj => obj::write_obj(path, meshes),
         ExportFormat::Gltf => gltf::write_gltf(path, meshes),
+        ExportFormat::ThreeMf => threemf::write_3mf(path, meshes),
     }
 }

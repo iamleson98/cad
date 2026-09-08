@@ -23,8 +23,8 @@ pub enum EvalRequest {
 
 /// Worker response.
 pub enum EvalResponse {
-    /// Evaluation finished.
-    Done(Evaluation),
+    /// Evaluation finished (result + wall duration, PR-05).
+    Done(Evaluation, std::time::Duration),
 }
 
 /// Handle to the background evaluation worker.
@@ -59,8 +59,10 @@ impl EvalWorker {
                                     node.dirty = clean;
                                 }
                             }
+                            let t0 = std::time::Instant::now();
                             let ev = evaluator.evaluate(&mut doc);
-                            let _ = tx_res.send(EvalResponse::Done(ev));
+                            let eval_duration = t0.elapsed();
+                            let _ = tx_res.send(EvalResponse::Done(ev, eval_duration));
                         }
                     }
                 }
@@ -136,6 +138,7 @@ pub struct ExportDone {
 pub struct ImportDone {
     /// Source file path.
     pub path: std::path::PathBuf,
-    /// The repaired, welded mesh (or the error text).
-    pub result: Result<forge_geometry::TriMesh, String>,
+    /// The repaired, welded meshes (name + mesh, one per object — 3MF
+    /// packages may hold several) or the error text.
+    pub result: Result<Vec<(String, forge_geometry::TriMesh)>, String>,
 }

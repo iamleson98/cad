@@ -241,9 +241,27 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       (RON round-trip tested), booleans/patterns/mirrors work on imported
       bodies (volume-exact cut test). UX: drag-and-drop .stl/.obj onto the
       window + palette import command. 3MF still open (I-02).*
-- [ ] **I-02 3MF export/import** `(M)` `P2`
+- [x] **I-02 3MF export/import** `(M)` `P2`
       ZIP container + XML mesh (with units + optional color), production
       3D-print format; import for mesh bodies.
+      *Done: `forge_io::threemf` — hand-rolled OPC/ZIP writer
+      (deflate via pure-Rust `miniz_oxide`) + reader (central directory,
+      stored AND deflate entries, CRC-verified, Zip64 rejected with a
+      clear error). Minimal streaming XML scanner (quote-aware `>` in
+      attributes, namespace stripping, entity escape/unescape, comments/
+      CDATA skipped). Import: model part discovered via package
+      relationships (extension fallback), `<model unit>` scaling (micron
+      → meter), multi-object packages → one body per object,
+      `<build><item>` 4×3 row-vector transforms, recursive `<components>`
+      expansion with cycle guard, then the standard weld/repair pipeline.
+      Export: one object per body + build items; names XML-escaped.
+      App: Export 3MF palette command, .3mf drag-and-drop + import
+      command (multi-object imports as `file:object` bodies). Not
+      supported: materials/colors + extension namespaces (ignored on
+      read). Tests: multi-body roundtrip (incl. escaped names), stored-
+      entry ZIP fixture with transforms, unit scaling, components
+      expansion, malformed + CRC-corruption rejection, XML scanner edge
+      cases.*
 - [ ] **I-03 STEP AP242 export** `(L→Phase 6)` `P1`
       Via `opencascade-rs` optional feature: tessellated→B-Rep (sewn
       shells) → STEP; exact-geometry path when Wave 6 kernel lands.
@@ -320,9 +338,20 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 
 ## Wave 7 — Production hardening
 
-- [ ] **PR-01 Crash reporter + telemetry opt-in** `(S)` `P2`
+- [x] **PR-01 Crash reporter + telemetry opt-in** `(S)` `P2`
       Panic hook → local report file with document snapshot; opt-in
       anonymous usage stats.
+      *Done (local half): `forge_app::crash` — panic hook chained after
+      the default one writes a report (version, timestamp, panic +
+      location, backtrace) and a document snapshot to
+      `<temp>/forgecad_crash/`; the snapshot refreshes after *every*
+      mutation (rides the evaluation request — parametric data only,
+      cheap) so recovery is fresher than the 2-minute autosave; startup
+      prefers the newest of {crash snapshot, autosave} and says which.
+      Never panics in the panic path (lock poisoning recovered, writes
+      best-effort). Telemetry: deliberately NOT implemented — reports
+      stay on disk, nothing is sent anywhere; any future opt-in is an
+      explicit user decision, never silent.*
 - [ ] **PR-02 Plugin/scripting API** `(L)` `P3`
       Rust-ABI stable trait surface + Rhai or WASM scripting for user
       commands (Onshape FeatureScript equivalent).
@@ -331,9 +360,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       signed, with delta updates.
 - [ ] **PR-04 i18n + HiDPI + accessibility** `(M)` `P3`
       fluent-rs catalogs, scale-aware egui, keyboard-only modeling.
-- [ ] **PR-05 Performance dashboard** `(S)` `P2`
+- [x] **PR-05 Performance dashboard** `(S)` `P2`
       Frame-time, eval-time, memory stats in status bar (debug builds) +
       regression benchmark in CI (criterion).
+      *Done (dashboard half): status bar now shows bodies, triangles,
+      rolling-average fps + frame ms, and the wall duration of the last
+      evaluation (measured inside the eval worker, reported with the
+      result). Shown in all builds — it is one cheap label, and eval >
+      frame time is expected (geometry runs on the background worker).
+      Criterion CI benchmarks remain open (fold into K-04's tessellation
+      cache work where the regression risk actually lives).*
 - [ ] **PR-06 User docs** `(M)` `P2`
       mdBook guide: quickstart, every tool, troubleshooting; in-app help
       (F1) reusing the same source.

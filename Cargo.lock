@@ -1313,6 +1313,7 @@ dependencies = [
  "forge-geometry",
  "forge-model",
  "forge-sketch",
+ "miniz_oxide 0.8.9",
  "rayon",
  "ron",
  "serde",

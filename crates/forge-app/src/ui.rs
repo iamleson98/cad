@@ -1016,8 +1016,23 @@ pub fn status_bar(ui: &mut egui::Ui, app: &ForgeApp) {
         } else {
             "ready"
         };
+        // PR-05: live performance stats — frame pacing and the wall
+        // duration of the last evaluation (geometry work happens on the
+        // background worker, so eval > frame time is normal and fine).
+        let (fps, frame_ms) = if app.frame_times.is_empty() {
+            (0.0, 0.0)
+        } else {
+            let n = app.frame_times.len() as f32;
+            let avg = app.frame_times.iter().sum::<f32>() / n;
+            (1.0 / avg.max(1e-6), avg * 1000.0)
+        };
+        let eval_ms = app
+            .last_eval_duration
+            .map(|d| format!("{:.0} ms", d.as_secs_f64() * 1e3))
+            .unwrap_or_else(|| "—".into());
         ui.label(format!(
-            "{eval_state}  |  bodies: {bodies}  |  tris: {tris}"
+            "{eval_state}  |  bodies: {bodies}  |  tris: {tris}  |  \
+             {fps:.0} fps ({frame_ms:.1} ms/frame)  |  eval: {eval_ms}"
         ));
         ui.separator();
         // S-05: live sketch diagnostics for the selected sketch.

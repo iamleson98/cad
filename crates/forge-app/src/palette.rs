@@ -220,8 +220,13 @@ pub fn entries() -> Vec<PaletteEntry> {
             action: ExportGLTF,
         },
         PaletteEntry {
-            label: "Import mesh from current directory (import.stl / import.obj)",
-            keywords: "file import mesh stl obj load",
+            label: "Export 3MF",
+            keywords: "file export mesh 3d print package zip",
+            action: Export3MF,
+        },
+        PaletteEntry {
+            label: "Import mesh from current directory (stl / obj / 3mf)",
+            keywords: "file import mesh stl obj 3mf load",
             action: ImportMeshDir,
         },
         PaletteEntry {
@@ -334,6 +339,8 @@ pub enum PaletteAction {
     ExportSTL,
     ExportOBJ,
     ExportGLTF,
+    /// I-02: 3MF export.
+    Export3MF,
     /// Import a mesh from `import.stl` / `import.obj` in the current
     /// directory (I-01); drag-and-drop is the primary import path.
     ImportMeshDir,
@@ -465,14 +472,19 @@ impl PaletteAction {
             ExportSTL => app.export_mesh(forge_io::ExportFormat::Stl),
             ExportOBJ => app.export_mesh(forge_io::ExportFormat::Obj),
             ExportGLTF => app.export_mesh(forge_io::ExportFormat::Gltf),
+            Export3MF => app.export_mesh(forge_io::ExportFormat::ThreeMf),
 
             ImportMeshDir => {
                 let cwd = std::env::current_dir().unwrap_or_default();
-                let candidates = [cwd.join("import.stl"), cwd.join("import.obj")];
+                let candidates = [
+                    cwd.join("import.stl"),
+                    cwd.join("import.obj"),
+                    cwd.join("import.3mf"),
+                ];
                 let Some(path) = candidates.iter().find(|p| p.is_file()) else {
                     app.set_status(
-                        "No import.stl / import.obj in the current directory — \
-                         or drag a file onto the window",
+                        "No import.stl / import.obj / import.3mf in the current \
+                         directory — or drag a file onto the window",
                     );
                     return;
                 };

@@ -12,6 +12,7 @@
 
 pub mod app;
 pub mod background;
+pub mod crash;
 pub mod gizmo;
 pub mod palette;
 pub mod picking;
@@ -19,3 +20,4 @@ pub mod ui;
 pub mod viewport;
 
 pub use app::ForgeApp;
+pub use crash::install_hook;
