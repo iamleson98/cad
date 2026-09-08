@@ -72,6 +72,8 @@ pub struct ForgeApp {
     /// Command palette state.
     pub palette_open: bool,
     pub palette_query: String,
+    /// Highlighted row in the palette list (↑/↓ navigation).
+    pub palette_cursor: usize,
 
     /// A pick result is awaited (poll the renderer each frame).
     pub pick_requested: bool,
@@ -124,6 +126,10 @@ pub struct ForgeApp {
 impl ForgeApp {
     /// Create the app from the eframe creation context.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Fonts (Inter + Lucide icons) and the ForgeCAD dark theme —
+        // before the first frame so nothing flashes the egui default.
+        crate::theme::install(&cc.egui_ctx);
+
         // GPU renderer from eframe's wgpu state.
         let renderer = cc.wgpu_render_state.as_ref().map(|state| {
             Arc::new(Mutex::new(Renderer::new(
@@ -208,6 +214,7 @@ impl ForgeApp {
             doc_path: None,
             palette_open: false,
             palette_query: String::new(),
+            palette_cursor: 0,
             pick_requested: false,
             measure_mode: false,
             measure_picks: Vec::new(),
@@ -633,6 +640,7 @@ impl eframe::App for ForgeApp {
             if ctrl && shift && i.key_pressed(egui::Key::P) {
                 self.palette_open = !self.palette_open;
                 self.palette_query.clear();
+                self.palette_cursor = 0;
             }
             if ctrl && !shift && i.key_pressed(egui::Key::Z) {
                 PaletteAction::Undo.run(self);
@@ -704,8 +712,6 @@ impl eframe::App for ForgeApp {
             .default_size(230.0)
             .resizable(true)
             .show(ui, |ui| {
-                ui.heading("Feature tree");
-                ui.separator();
                 ui::tree_panel(ui, self);
                 // P-01: the parameter table shares the left panel.
                 ui.add_space(8.0);
@@ -716,8 +722,6 @@ impl eframe::App for ForgeApp {
             .default_size(260.0)
             .resizable(true)
             .show(ui, |ui| {
-                ui.heading("Inspector");
-                ui.separator();
                 ui::inspector(ui, self);
             });
 

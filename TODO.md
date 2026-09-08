@@ -338,6 +338,26 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 
 ## Wave 7 — Production hardening
 
+- [x] **PR-08 Modern UI + icon system** `(M)` `P1`
+      Cohesive visual identity: an icon font on every button/row (no more
+      ad-hoc unicode glyphs), refined dark theme, real typography, smooth
+      hover animation.
+      *Done: Lucide icon font (ISC) embedded as the `icons` family —
+      `theme.rs` installs fonts (Inter regular + semibold for text,
+      Lucide for glyphs) and a forge-ember dark theme (charcoal
+      surfaces, 6 px rounding, roomier spacing, accent matching the
+      viewport selection tint). `icons.rs` is generated from
+      `assets/lucide.css` (`scripts/gen_icons.py`, 70 curated glyphs,
+      fails loudly on unknown names); regression tests pin constants to
+      the shipped CSS and font coverage. Toolbar: grouped animated icon
+      buttons (`theme::tool_button` — 0.12 s hover fade, pinned accent
+      state, tooltips with shortcut hints) + 3MF added to the export
+      menu. Feature tree: per-feature-kind icons, DOF/err badges, eye
+      suppress toggle, right-click + ⋮ context menu. Status bar: icon
+      stat chips (bodies/tris/fps/eval). Command palette: icons,
+      ↑/↓/↵ keyboard navigation, hover sync, search focus. Inspector
+      header shows the feature icon; panel section headers with icons.*
+
 - [x] **PR-01 Crash reporter + telemetry opt-in** `(S)` `P2`
       Panic hook → local report file with document snapshot; opt-in
       anonymous usage stats.

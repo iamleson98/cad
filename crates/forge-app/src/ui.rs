@@ -4,213 +4,333 @@ use crate::app::ForgeApp;
 use crate::palette::{entries, fuzzy_score, PaletteAction};
 use forge_model::{Command, DimField, Feature};
 
-/// Top toolbar.
+/// Top toolbar: grouped animated icon buttons (theme::tool_button) with
+/// tooltips that carry the keyboard shortcut.
 pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("ForgeCAD").strong().size(15.0));
+    use crate::icons;
+    use crate::theme::tool_button;
+
+    ui.horizontal_wrapped(|ui| {
+        ui.set_min_height(34.0);
+
+        // -- Brand ----------------------------------------------------------
+        ui.horizontal(|ui| {
+            ui.label(icons::colored(icons::HAMMER, 17.0, crate::theme::ACCENT));
+            ui.label(crate::theme::semibold("ForgeCAD").size(14.5));
+        });
 
         ui.separator();
 
-        // Undo / redo.
-        let undo = egui::Button::new("⟲ Undo").small();
-        if ui
-            .add_enabled(app.commands.can_undo(), undo)
-            .on_disabled_hover_text("Nothing to undo")
-            .clicked()
+        // -- History --------------------------------------------------------
+        if tool_button(
+            ui,
+            "undo",
+            icons::UNDO,
+            None,
+            "Undo\nCtrl+Z",
+            false,
+            app.commands.can_undo(),
+        )
+        .clicked()
         {
             PaletteAction::Undo.run(app);
         }
-        let redo = egui::Button::new("⟳ Redo").small();
-        if ui
-            .add_enabled(app.commands.can_redo(), redo)
-            .on_disabled_hover_text("Nothing to redo")
-            .clicked()
+        if tool_button(
+            ui,
+            "redo",
+            icons::REDO,
+            None,
+            "Redo\nCtrl+Y",
+            false,
+            app.commands.can_redo(),
+        )
+        .clicked()
         {
             PaletteAction::Redo.run(app);
         }
 
         ui.separator();
 
-        // Primitives quick menu.
-        let prim = egui::Button::new("＋ Primitive ▾").small();
-        let response = ui.menu_button("＋ Solid", |ui| {
-            for (kind, dims) in [
-                (forge_model::PrimitiveKind::Box, [40.0, 30.0, 20.0]),
-                (forge_model::PrimitiveKind::Sphere, [20.0, 0.0, 0.0]),
-                (forge_model::PrimitiveKind::Cylinder, [10.0, 30.0, 0.0]),
-                (forge_model::PrimitiveKind::Cone, [12.0, 6.0, 25.0]),
-                (forge_model::PrimitiveKind::Torus, [20.0, 6.0, 0.0]),
+        // -- Create ---------------------------------------------------------
+        ui.menu_button(chevron_label(icons::PLUS, "Solid"), |ui| {
+            for (kind, icon, dims) in [
+                (
+                    forge_model::PrimitiveKind::Box,
+                    icons::BOX,
+                    [40.0, 30.0, 20.0],
+                ),
+                (
+                    forge_model::PrimitiveKind::Sphere,
+                    icons::SPHERE,
+                    [20.0, 0.0, 0.0],
+                ),
+                (
+                    forge_model::PrimitiveKind::Cylinder,
+                    icons::CYLINDER,
+                    [10.0, 30.0, 0.0],
+                ),
+                (
+                    forge_model::PrimitiveKind::Cone,
+                    icons::CONE,
+                    [12.0, 6.0, 25.0],
+                ),
+                (
+                    forge_model::PrimitiveKind::Torus,
+                    icons::TORUS,
+                    [20.0, 6.0, 0.0],
+                ),
             ] {
                 let dims = forge_core::Vector3::new(dims[0], dims[1], dims[2]);
-                if ui.button(kind.to_string()).clicked() {
+                if ui
+                    .button(icons::icon_label(icon, &kind.to_string()))
+                    .clicked()
+                {
                     app.add_primitive(kind, dims);
                 }
             }
         });
-        let _ = prim;
-        let _ = response;
-
-        if ui
-            .add(egui::Button::new("＋ Sketch Rect").small())
-            .clicked()
+        if tool_button(
+            ui,
+            "sketch-xy",
+            icons::SKETCH,
+            Some("Sketch"),
+            "New sketch: rectangle on the XY plane",
+            false,
+            true,
+        )
+        .clicked()
         {
             PaletteAction::NewSketchXY.run(app);
         }
-        if ui.add(egui::Button::new("Extrude ▲").small()).clicked() {
+        if tool_button(
+            ui,
+            "extrude",
+            icons::EXTRUDE,
+            Some("Extrude"),
+            "Extrude the latest sketch into a solid",
+            false,
+            true,
+        )
+        .clicked()
+        {
             PaletteAction::ExtrudeLastSketch.run(app);
         }
-        if ui.add(egui::Button::new("Drill ⌾").small()).clicked() {
+        if tool_button(
+            ui,
+            "drill",
+            icons::DRILL,
+            Some("Drill"),
+            "Cut the latest body with a cylinder",
+            false,
+            true,
+        )
+        .clicked()
+        {
             PaletteAction::CutWithCylinder.run(app);
         }
 
         ui.separator();
 
-        // View toggles.
-        let proj_label = if app.camera.orthographic {
-            "Ortho"
-        } else {
-            "Persp"
-        };
-        if ui
-            .button(proj_label)
-            .on_hover_text("Projection (P)")
-            .clicked()
+        // -- View -----------------------------------------------------------
+        let ortho = app.camera.orthographic;
+        if tool_button(
+            ui,
+            "projection",
+            icons::AXIS_3D,
+            None,
+            if ortho {
+                "Orthographic projection\nP"
+            } else {
+                "Perspective projection\nP"
+            },
+            false,
+            true,
+        )
+        .clicked()
         {
             PaletteAction::ToggleProjection.run(app);
         }
-        if ui
-            .add(egui::Button::new("Fit").small())
-            .on_hover_text("Fit view (F)")
-            .clicked()
+        if tool_button(
+            ui,
+            "fit",
+            icons::FIT,
+            None,
+            "Fit view to the model\nF",
+            false,
+            true,
+        )
+        .clicked()
         {
             PaletteAction::FitView.run(app);
         }
-        if ui
-            .button(if app.render_options.show_grid {
-                "Grid ✓"
-            } else {
-                "Grid"
-            })
-            .on_hover_text("Ground grid (G)")
-            .clicked()
+        if tool_button(
+            ui,
+            "grid",
+            icons::GRID,
+            None,
+            "Ground grid\nG",
+            app.render_options.show_grid,
+            true,
+        )
+        .clicked()
         {
             PaletteAction::ToggleGrid.run(app);
         }
-        if ui
-            .button(if app.render_options.show_edges {
-                "Edges ✓"
-            } else {
-                "Edges"
-            })
-            .on_hover_text("Feature edges (E)")
-            .clicked()
+        if tool_button(
+            ui,
+            "edges",
+            icons::EDGES,
+            None,
+            "Feature edges\nE",
+            app.render_options.show_edges,
+            true,
+        )
+        .clicked()
         {
             PaletteAction::ToggleEdges.run(app);
         }
 
-        ui.separator();
-
-        // Display modes (W-05) + section view (W-02).
+        // Display modes (W-05) + section view (W-02) + measure (W-08).
         let mode = app.render_options.display_mode;
+        let mode_label = match mode {
+            forge_render::DisplayMode::Shaded => icons::icon_label(icons::SHADED, "Shaded"),
+            forge_render::DisplayMode::Wireframe => {
+                icons::icon_label(icons::WIREFRAME, "Wireframe")
+            }
+            forge_render::DisplayMode::XRay => icons::icon_label(icons::XRAY, "X-Ray"),
+        };
         egui::ComboBox::from_id_salt("display-mode")
-            .selected_text(match mode {
-                forge_render::DisplayMode::Shaded => "◑ Shaded",
-                forge_render::DisplayMode::Wireframe => "⌗ Wireframe",
-                forge_render::DisplayMode::XRay => "◐ X-Ray",
-            })
+            .selected_text(mode_label)
             .show_ui(ui, |ui| {
                 ui.selectable_value(
                     &mut app.render_options.display_mode,
                     forge_render::DisplayMode::Shaded,
-                    "◑ Shaded",
+                    icons::icon_label(icons::SHADED, "Shaded"),
                 );
                 ui.selectable_value(
                     &mut app.render_options.display_mode,
                     forge_render::DisplayMode::Wireframe,
-                    "⌗ Wireframe (hidden line)",
+                    icons::icon_label(icons::WIREFRAME, "Wireframe (hidden line)"),
                 );
                 ui.selectable_value(
                     &mut app.render_options.display_mode,
                     forge_render::DisplayMode::XRay,
-                    "◐ X-Ray (translucent)",
+                    icons::icon_label(icons::XRAY, "X-Ray (translucent)"),
                 );
             });
-        if ui
-            .button(if app.render_options.section.is_some() {
-                "Section ✓"
-            } else {
-                "Section"
-            })
-            .on_hover_text("Section view: cut the model with a plane")
-            .clicked()
+        if tool_button(
+            ui,
+            "section",
+            icons::SECTION,
+            None,
+            "Section view: cut the model with a plane",
+            app.render_options.section.is_some(),
+            true,
+        )
+        .clicked()
         {
             PaletteAction::ToggleSection.run(app);
         }
-        if ui
-            .button(if app.measure_mode {
-                "Measure ✓"
-            } else {
-                "Measure"
-            })
-            .on_hover_text("Measure: click two surface points for distance + angle")
-            .clicked()
+        if tool_button(
+            ui,
+            "measure",
+            icons::MEASURE,
+            None,
+            "Measure: click two surface points for distance + angle",
+            app.measure_mode,
+            true,
+        )
+        .clicked()
         {
             PaletteAction::ToggleMeasure.run(app);
         }
 
         ui.separator();
 
-        // Gizmo mode (W-01): translate / rotate manipulator.
-        if ui
-            .add(
-                egui::Button::new("⇔ Move")
-                    .small()
-                    .selected(app.gizmo_mode == crate::gizmo::GizmoMode::Translate),
-            )
-            .on_hover_text("Gizmo translate mode (T) — select a body and drag an axis")
-            .clicked()
+        // -- Gizmo + selection granularity (W-01 / W-04) ---------------------
+        if tool_button(
+            ui,
+            "gizmo-move",
+            icons::MOVE_3D,
+            Some("Move"),
+            "Gizmo translate — select a body and drag an axis\nT",
+            app.gizmo_mode == crate::gizmo::GizmoMode::Translate,
+            true,
+        )
+        .clicked()
         {
             PaletteAction::GizmoTranslate.run(app);
         }
-        if ui
-            .add(
-                egui::Button::new("⟳ Rotate")
-                    .small()
-                    .selected(app.gizmo_mode == crate::gizmo::GizmoMode::Rotate),
-            )
-            .on_hover_text("Gizmo rotate mode (R) — select a body and drag a ring")
-            .clicked()
+        if tool_button(
+            ui,
+            "gizmo-rotate",
+            icons::ROTATE_3D,
+            Some("Rotate"),
+            "Gizmo rotate — select a body and drag a ring\nR",
+            app.gizmo_mode == crate::gizmo::GizmoMode::Rotate,
+            true,
+        )
+        .clicked()
         {
             PaletteAction::GizmoRotate.run(app);
         }
 
-        // Selection granularity (W-04): bodies / faces / edges / vertices.
-        let mut mode = app.pick_mode;
-        egui::ComboBox::from_id_salt("pick-mode")
-            .selected_text(format!("Select: {}", mode.label()))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut mode, crate::picking::PickMode::Bodies, "Bodies");
-                ui.selectable_value(&mut mode, crate::picking::PickMode::Faces, "Faces");
-                ui.selectable_value(
-                    &mut mode,
-                    crate::picking::PickMode::Edges,
-                    "Edges (sharp chains)",
-                );
-                ui.selectable_value(&mut mode, crate::picking::PickMode::Vertices, "Vertices");
-            });
-        if mode != app.pick_mode {
-            app.pick_mode = mode;
-            app.selection.clear();
-            app.set_status(format!("Picking {}", mode.label().to_lowercase()));
+        {
+            let mut mode = app.pick_mode;
+            let label = match mode {
+                crate::picking::PickMode::Bodies => icons::icon_label(icons::BODIES, "Bodies"),
+                crate::picking::PickMode::Faces => {
+                    icons::icon_label(icons::SKETCH_ON_FACE, "Faces")
+                }
+                crate::picking::PickMode::Edges => icons::icon_label(icons::EDGES, "Edges"),
+                crate::picking::PickMode::Vertices => icons::icon_label(icons::TARGET, "Vertices"),
+            };
+            egui::ComboBox::from_id_salt("pick-mode")
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut mode,
+                        crate::picking::PickMode::Bodies,
+                        icons::icon_label(icons::BODIES, "Bodies"),
+                    );
+                    ui.selectable_value(
+                        &mut mode,
+                        crate::picking::PickMode::Faces,
+                        icons::icon_label(icons::SKETCH_ON_FACE, "Faces"),
+                    );
+                    ui.selectable_value(
+                        &mut mode,
+                        crate::picking::PickMode::Edges,
+                        icons::icon_label(icons::EDGES, "Edges (sharp chains)"),
+                    );
+                    ui.selectable_value(
+                        &mut mode,
+                        crate::picking::PickMode::Vertices,
+                        icons::icon_label(icons::TARGET, "Vertices"),
+                    );
+                });
+            if mode != app.pick_mode {
+                app.pick_mode = mode;
+                app.selection.clear();
+                app.set_status(format!("Picking {}", mode.label().to_lowercase()));
+            }
         }
         if app.pick_mode == crate::picking::PickMode::Faces
-            && ui
-                .button("Sketch on face")
-                .on_hover_text("Create a sketch on the selected planar face (W-04)")
-                .clicked()
+            && tool_button(
+                ui,
+                "sketch-on-face",
+                icons::SKETCH_ON_FACE,
+                Some("Sketch on face"),
+                "Create a sketch on the selected planar face",
+                false,
+                true,
+            )
+            .clicked()
         {
             PaletteAction::SketchOnSelectedFace.run(app);
         }
+
+        // Section controls (only while the section view is on).
         if let Some(section) = &mut app.render_options.section {
             let mut axis = if section.normal[0] != 0.0 {
                 0
@@ -220,7 +340,7 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 2
             };
             egui::ComboBox::from_id_salt("section-axis")
-                .selected_text(["X", "Y", "Z"][axis])
+                .selected_text(icons::icon_label(icons::SECTION, ["X", "Y", "Z"][axis]))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut axis, 0, "cut ⟂ X");
                     ui.selectable_value(&mut axis, 1, "cut ⟂ Y");
@@ -240,7 +360,17 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
                     .text("offset")
                     .smart_aim(false),
             );
-            if ui.button("Flip").clicked() {
+            if tool_button(
+                ui,
+                "section-flip",
+                icons::MIRROR,
+                None,
+                "Flip the section side",
+                false,
+                true,
+            )
+            .clicked()
+            {
                 section.normal = [-normal[0], -normal[1], -normal[2]];
                 section.offset = -section.offset;
             }
@@ -249,14 +379,21 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
 
         ui.separator();
 
-        if ui
-            .button("Save")
-            .on_hover_text("Save .forgecad (Ctrl+S)")
-            .clicked()
+        // -- Files ------------------------------------------------------------
+        if tool_button(
+            ui,
+            "save",
+            icons::SAVE,
+            None,
+            "Save .forgecad\nCtrl+S",
+            false,
+            true,
+        )
+        .clicked()
         {
             PaletteAction::SaveNative.run(app);
         }
-        let export = ui.menu_button("Export", |ui| {
+        ui.menu_button(chevron_label(icons::EXPORT, "Export"), |ui| {
             if ui.button("STL (binary)").clicked() {
                 app.export_mesh(forge_io::ExportFormat::Stl);
             }
@@ -266,13 +403,22 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
             if ui.button("glTF 2.0").clicked() {
                 app.export_mesh(forge_io::ExportFormat::Gltf);
             }
+            if ui.button("3MF (3D print package)").clicked() {
+                app.export_mesh(forge_io::ExportFormat::ThreeMf);
+            }
         });
-        let _ = export;
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add(egui::Button::new("⌘ Palette (Ctrl+Shift+P)").small())
-                .clicked()
+            if tool_button(
+                ui,
+                "palette",
+                icons::COMMAND,
+                None,
+                "Command palette\nCtrl+Shift+P",
+                app.palette_open,
+                true,
+            )
+            .clicked()
             {
                 app.palette_open = !app.palette_open;
                 app.palette_query.clear();
@@ -281,144 +427,333 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
     });
 }
 
-/// Left panel: the parametric feature tree (FR-SM-04, FR-UI-02).
+/// Icon + label + muted chevron-down job for menu buttons ("Solid ▾").
+fn chevron_label(icon: char, label: &str) -> egui::text::LayoutJob {
+    use egui::{Color32, FontFamily, FontId, TextFormat};
+    let mut job = crate::icons::icon_label(icon, label);
+    job.append(
+        "  ",
+        0.0,
+        TextFormat {
+            font_id: FontId::new(13.0, FontFamily::Proportional),
+            color: Color32::PLACEHOLDER,
+            ..Default::default()
+        },
+    );
+    job.append(
+        &crate::icons::CHEVRON_DOWN.to_string(),
+        0.0,
+        TextFormat {
+            font_id: FontId::new(13.0, crate::icons::family()),
+            color: Color32::PLACEHOLDER,
+            ..Default::default()
+        },
+    );
+    job
+}
+
+/// Lucide glyph for a feature kind (tree rows + inspector title).
+fn feature_icon(feature: &Feature) -> char {
+    use crate::icons;
+    match feature {
+        Feature::Sketch(_) => icons::SKETCH,
+        Feature::Extrude(_) => icons::EXTRUDE,
+        Feature::Revolve(_) => icons::REVOLVE,
+        Feature::Loft(_) => icons::LOFT,
+        Feature::Sweep(_) => icons::SWEEP,
+        Feature::Primitive(p) => match p.kind {
+            forge_model::PrimitiveKind::Box => icons::BOX,
+            forge_model::PrimitiveKind::Sphere => icons::SPHERE,
+            forge_model::PrimitiveKind::Cylinder => icons::CYLINDER,
+            forge_model::PrimitiveKind::Cone => icons::CONE,
+            forge_model::PrimitiveKind::Torus => icons::TORUS,
+        },
+        Feature::Boolean(_) => icons::COMBINE,
+        Feature::TransformBody { .. } => icons::MOVE_3D,
+        Feature::LinearPattern(_) => icons::LINEAR_PATTERN,
+        Feature::CircularPattern(_) => icons::CIRCULAR_PATTERN,
+        Feature::Mirror(_) => icons::MIRROR,
+        Feature::Hole(_) => icons::DRILL,
+        Feature::Datum(_) => icons::DATUM,
+        Feature::ImportedMesh(_) => icons::IMPORTED_MESH,
+    }
+}
+
+/// Left panel: the parametric feature tree (FR-SM-04, FR-UI-02) — icon
+/// rows with diagnostics badges, suppress toggle and a context menu
+/// (both the ⋮ button and right-click on the row).
 pub fn tree_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        let order: Vec<forge_core::FeatureId> = app.doc.tree.order().to_vec();
-        if order.is_empty() {
-            ui.label(
+    use crate::icons;
+    use crate::theme;
+
+    crate::theme::section_header(ui, icons::FEATURES, "Features");
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let order: Vec<forge_core::FeatureId> = app.doc.tree.order().to_vec();
+            if order.is_empty() {
+                ui.add_space(10.0);
+                ui.label(
                 egui::RichText::new(
                     "No features yet.\nUse the palette (Ctrl+Shift+P)\nto add solids and sketches.",
                 )
                 .weak(),
             );
-            return;
-        }
+                return;
+            }
 
-        for id in order {
-            let Some(node) = app.doc.tree.get(id).cloned() else {
-                continue;
-            };
-            let label = node.feature.label();
-            let selected = app.selection.primary_feature() == Some(id);
-            let has_error = app
-                .last_evaluation
-                .as_ref()
-                .map(|ev| ev.errors.contains_key(&id))
-                .unwrap_or(false);
-
-            let icon = match &node.feature {
-                Feature::Sketch(_) => "✎",
-                Feature::Extrude(_) => "▲",
-                Feature::Revolve(_) => "↻",
-                Feature::Loft(_) => "⌒",
-                Feature::Sweep(_) => "➰",
-                Feature::Primitive(_) => "◧",
-                Feature::Boolean(_) => "⊕",
-                Feature::TransformBody { .. } => "✥",
-                Feature::LinearPattern(_) => "⋮",
-                Feature::CircularPattern(_) => "◍",
-                Feature::Mirror(_) => "⇄",
-                Feature::Hole(_) => "⌾",
-                Feature::Datum(_) => "▱",
-                Feature::ImportedMesh(_) => "⤓",
-            };
-
-            // S-05: sketch diagnostics badge (DOF / over-constrained).
-            let dof_badge: Option<String> = match &node.feature {
-                Feature::Sketch(_) => app
+            for id in order {
+                let Some(node) = app.doc.tree.get(id).cloned() else {
+                    continue;
+                };
+                let label = node.feature.label();
+                let selected = app.selection.primary_feature() == Some(id);
+                let has_error = app
                     .last_evaluation
                     .as_ref()
-                    .and_then(|ev| ev.sketch_reports.get(&id))
-                    .map(|r| {
-                        if r.dof_balance > 0 {
-                            format!("{} DOF", r.dof_balance)
-                        } else if r.dof_balance < 0 {
-                            format!("over-constrained {}", -r.dof_balance)
-                        } else {
-                            "fully constrained".to_string()
-                        }
-                    }),
-                _ => None,
-            };
+                    .map(|ev| ev.errors.contains_key(&id))
+                    .unwrap_or(false);
+                let icon = feature_icon(&node.feature);
 
-            let mut title = format!("{icon} {label}");
-            if let Some(badge) = &dof_badge {
-                title = format!("{title} — {badge}");
-            }
-            if node.suppressed {
-                title = format!("∅ {title}");
-            }
-            if has_error {
-                title = format!("⚠ {title}");
-            }
+                // S-05: sketch diagnostics badge (DOF / over-constrained).
+                let dof_badge: Option<String> = match &node.feature {
+                    Feature::Sketch(_) => app
+                        .last_evaluation
+                        .as_ref()
+                        .and_then(|ev| ev.sketch_reports.get(&id))
+                        .map(|r| {
+                            if r.dof_balance > 0 {
+                                format!("{} DOF", r.dof_balance)
+                            } else if r.dof_balance < 0 {
+                                format!("over-constrained {}", -r.dof_balance)
+                            } else {
+                                "fully constrained".to_string()
+                            }
+                        }),
+                    _ => None,
+                };
 
-            ui.horizontal(|ui| {
-                let text = egui::RichText::new(title);
-                let text = if selected { text.strong() } else { text };
-                if ui.selectable_label(selected, text).clicked() {
-                    app.selection.select(forge_model::SelectionItem::Body(
-                        forge_core::BodyId::new(id.raw()),
-                    ));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut suppressed = node.suppressed;
-                    if ui
-                        .checkbox(&mut suppressed, "")
-                        .on_hover_text("Suppress feature")
-                        .changed()
+                // Row: [suppressed-eye] [feature icon] label .... [badges] [⋮]
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(4, 1))
+                    .corner_radius(5)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let mut job = egui::text::LayoutJob::default();
+                            let icon_color = if node.suppressed {
+                                theme::MUTED
+                            } else if has_error {
+                                theme::ERR
+                            } else {
+                                theme::ACCENT
+                            };
+                            if node.suppressed {
+                                job.append(
+                                    &icons::EYE_OFF.to_string(),
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: egui::FontId::new(12.0, icons::family()),
+                                        color: theme::MUTED,
+                                        ..Default::default()
+                                    },
+                                );
+                                job.append(
+                                    " ",
+                                    0.0,
+                                    egui::TextFormat::simple(
+                                        egui::FontId::new(12.0, egui::FontFamily::Proportional),
+                                        egui::Color32::PLACEHOLDER,
+                                    ),
+                                );
+                            }
+                            job.append(
+                                &icon.to_string(),
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: egui::FontId::new(14.0, icons::family()),
+                                    color: icon_color,
+                                    ..Default::default()
+                                },
+                            );
+                            job.append(
+                                "  ",
+                                0.0,
+                                egui::TextFormat::simple(
+                                    egui::FontId::new(12.5, egui::FontFamily::Proportional),
+                                    egui::Color32::PLACEHOLDER,
+                                ),
+                            );
+                            job.append(
+                                &label,
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: egui::FontId::new(
+                                        13.0,
+                                        if selected {
+                                            egui::FontFamily::Name(theme::SEMIBOLD.into())
+                                        } else {
+                                            egui::FontFamily::Proportional
+                                        },
+                                    ),
+                                    color: if node.suppressed {
+                                        theme::MUTED
+                                    } else {
+                                        egui::Color32::PLACEHOLDER
+                                    },
+                                    ..Default::default()
+                                },
+                            );
+                            if has_error {
+                                job.append(
+                                    "  ",
+                                    0.0,
+                                    egui::TextFormat::simple(
+                                        egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                                        egui::Color32::PLACEHOLDER,
+                                    ),
+                                );
+                                job.append(
+                                    &icons::ERROR.to_string(),
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: egui::FontId::new(13.0, icons::family()),
+                                        color: theme::ERR,
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+
+                            let response = ui.selectable_label(selected, job);
+                            if response.clicked() {
+                                app.selection.select(forge_model::SelectionItem::Body(
+                                    forge_core::BodyId::new(id.raw()),
+                                ));
+                            }
+                            // Right-click context menu (FR-UI-02).
+                            response.context_menu(|ui| {
+                                feature_row_menu(ui, app, id);
+                            });
+
+                            // Right side: DOF badge + suppress eye + ⋮ menu.
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.menu_button(
+                                        icons::colored(icons::MENU, 13.0, theme::MUTED),
+                                        |ui| {
+                                            feature_row_menu(ui, app, id);
+                                        },
+                                    );
+                                    if ui
+                                        .selectable_label(
+                                            node.suppressed,
+                                            icons::sized(
+                                                if node.suppressed {
+                                                    icons::EYE_OFF
+                                                } else {
+                                                    icons::EYE
+                                                },
+                                                13.0,
+                                            ),
+                                        )
+                                        .on_hover_text(if node.suppressed {
+                                            "Suppressed — click to enable"
+                                        } else {
+                                            "Suppress feature"
+                                        })
+                                        .clicked()
+                                    {
+                                        app.selection.select(forge_model::SelectionItem::Body(
+                                            forge_core::BodyId::new(id.raw()),
+                                        ));
+                                        PaletteAction::SuppressSelected.run(app);
+                                    }
+                                    if let Some(badge) = &dof_badge {
+                                        let (color, glyph) = match badge.as_str() {
+                                            "fully constrained" => (theme::OK, icons::CHECK_CIRCLE),
+                                            s if s.starts_with("over") => {
+                                                (theme::ERR, icons::ERROR)
+                                            }
+                                            _ => (theme::MUTED, icons::ELLIPSIS),
+                                        };
+                                        ui.horizontal(|ui| {
+                                            ui.label(icons::colored(glyph, 10.5, color));
+                                            ui.label(
+                                                egui::RichText::new(badge.clone())
+                                                    .size(10.5)
+                                                    .color(color),
+                                            );
+                                        })
+                                        .response
+                                        .on_hover_text("Sketch solver diagnostics (S-05)");
+                                    }
+                                },
+                            );
+                        });
+                    });
+
+                // Error text under the row.
+                if has_error {
+                    if let Some(err) = app
+                        .last_evaluation
+                        .as_ref()
+                        .and_then(|ev| ev.errors.get(&id))
                     {
-                        app.selection.select(forge_model::SelectionItem::Body(
-                            forge_core::BodyId::new(id.raw()),
-                        ));
-                        PaletteAction::SuppressSelected.run(app);
+                        ui.label(
+                            egui::RichText::new(format!("  {err}"))
+                                .small()
+                                .color(theme::ERR),
+                        );
                     }
-                });
-            });
-
-            // Right-click context menu (FR-UI-02).
-            ui.menu_button("  ⋮", |ui| {
-                if ui.button("Edit in inspector").clicked() {
-                    app.selection.select(forge_model::SelectionItem::Body(
-                        forge_core::BodyId::new(id.raw()),
-                    ));
                 }
-                if ui.button("Suppress / unsuppress").clicked() {
-                    app.selection.select(forge_model::SelectionItem::Body(
-                        forge_core::BodyId::new(id.raw()),
-                    ));
-                    app.toggle_suppress_selected();
-                }
-                if ui.button("Delete").clicked() {
-                    app.selection.select(forge_model::SelectionItem::Body(
-                        forge_core::BodyId::new(id.raw()),
-                    ));
-                    app.delete_selected();
-                }
-            });
-
-            // Error text under the row.
-            if has_error {
-                if let Some(err) = app
-                    .last_evaluation
-                    .as_ref()
-                    .and_then(|ev| ev.errors.get(&id))
-                {
-                    ui.label(
-                        egui::RichText::new(format!("  {err}"))
-                            .small()
-                            .color(egui::Color32::from_rgb(220, 120, 100)),
-                    );
-                }
+                ui.add_space(2.0);
             }
-            ui.add_space(2.0);
-        }
-    });
+        });
+}
+
+/// Context-menu items for a feature row (shared by ⋮ and right-click).
+fn feature_row_menu(ui: &mut egui::Ui, app: &mut ForgeApp, id: forge_core::FeatureId) {
+    use crate::icons;
+    if ui
+        .button(icons::icon_label(icons::EYE, "Edit in inspector"))
+        .clicked()
+    {
+        app.selection
+            .select(forge_model::SelectionItem::Body(forge_core::BodyId::new(
+                id.raw(),
+            )));
+        ui.close();
+    }
+    if ui
+        .button(icons::icon_label(icons::EYE_OFF, "Suppress / unsuppress"))
+        .clicked()
+    {
+        app.selection
+            .select(forge_model::SelectionItem::Body(forge_core::BodyId::new(
+                id.raw(),
+            )));
+        app.toggle_suppress_selected();
+        ui.close();
+    }
+    if ui
+        .button(icons::icon_label(icons::DELETE, "Delete"))
+        .clicked()
+    {
+        app.selection
+            .select(forge_model::SelectionItem::Body(forge_core::BodyId::new(
+                id.raw(),
+            )));
+        app.delete_selected();
+        ui.close();
+    }
 }
 
 /// Right panel: parameter inspector for the selected feature (FR-UI-03
 /// live preview editing).
 pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
+    use crate::icons;
+    use crate::theme;
+
     let Some(id) = app.selection.primary_feature() else {
         ui.label(egui::RichText::new("Select a feature to edit").weak());
         return;
@@ -427,7 +762,12 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
         return;
     };
 
-    ui.heading(feature.label());
+    // Title: the feature-kind icon + label (semibold).
+    ui.horizontal(|ui| {
+        ui.label(icons::colored(feature_icon(&feature), 15.0, theme::ACCENT));
+        ui.label(theme::semibold(feature.label()).size(14.0));
+    });
+    ui.add_space(4.0);
     ui.separator();
 
     fn edit_feature(
@@ -1003,74 +1343,136 @@ impl DirLabel for [&str; 3] {
     }
 }
 
-/// Bottom status bar.
+/// Bottom status bar: status message on the left, icon stat chips on
+/// the right (PR-05 live performance stats).
 pub fn status_bar(ui: &mut egui::Ui, app: &ForgeApp) {
+    use crate::icons;
+    use crate::theme;
+
     ui.horizontal(|ui| {
-        let (bodies, tris) = app
-            .last_evaluation
-            .as_ref()
-            .map(|ev| (ev.bodies.len(), ev.total_triangles))
-            .unwrap_or((0, 0));
-        let eval_state = if app.eval_pending {
-            "evaluating…"
-        } else {
-            "ready"
-        };
-        // PR-05: live performance stats — frame pacing and the wall
-        // duration of the last evaluation (geometry work happens on the
-        // background worker, so eval > frame time is normal and fine).
-        let (fps, frame_ms) = if app.frame_times.is_empty() {
-            (0.0, 0.0)
-        } else {
-            let n = app.frame_times.len() as f32;
-            let avg = app.frame_times.iter().sum::<f32>() / n;
-            (1.0 / avg.max(1e-6), avg * 1000.0)
-        };
-        let eval_ms = app
-            .last_eval_duration
-            .map(|d| format!("{:.0} ms", d.as_secs_f64() * 1e3))
-            .unwrap_or_else(|| "—".into());
-        ui.label(format!(
-            "{eval_state}  |  bodies: {bodies}  |  tris: {tris}  |  \
-             {fps:.0} fps ({frame_ms:.1} ms/frame)  |  eval: {eval_ms}"
-        ));
-        ui.separator();
-        // S-05: live sketch diagnostics for the selected sketch.
-        if let Some(sketch_id) = app.selection.primary_feature() {
-            if let Some(report) = app
+        ui.set_min_height(26.0);
+
+        // Left: the status line (single line, truncated).
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(app.status.as_str())
+                    .size(12.0)
+                    .color(theme::MUTED),
+            )
+            .truncate(),
+        );
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            theme::chip(
+                ui,
+                icons::ZAP,
+                "mm".into(),
+                "Millimeters — ForgeCAD's native unit",
+            );
+
+            let (bodies, tris) = app
                 .last_evaluation
                 .as_ref()
-                .and_then(|ev| ev.sketch_reports.get(&sketch_id))
-            {
-                let text = if report.dof_balance > 0 {
-                    format!("sketch: {} DOF", report.dof_balance)
-                } else if report.dof_balance < 0 {
-                    format!("sketch: over-constrained by {}", -report.dof_balance)
-                } else {
-                    "sketch: fully constrained".to_string()
-                };
-                let color = if report.dof_balance < 0 {
-                    egui::Color32::from_rgb(220, 120, 100)
-                } else {
-                    egui::Color32::from_rgb(140, 200, 140)
-                };
-                ui.label(egui::RichText::new(text).color(color));
-                ui.separator();
+                .map(|ev| (ev.bodies.len(), ev.total_triangles))
+                .unwrap_or((0, 0));
+            theme::chip(
+                ui,
+                icons::FEATURES,
+                format!("{}", app.doc.tree.len()),
+                "Features in the tree",
+            );
+            let eval_state = if app.eval_pending {
+                "evaluating…"
+            } else {
+                "ready"
+            };
+            let (state_icon, _state_color) = if app.eval_pending {
+                (icons::ACTIVITY, theme::ACCENT)
+            } else {
+                (icons::CHECK_CIRCLE, theme::MUTED)
+            };
+            // PR-05: live performance stats — frame pacing and the wall
+            // duration of the last evaluation (geometry work happens on
+            // the background worker, so eval > frame time is normal).
+            let (fps, frame_ms) = if app.frame_times.is_empty() {
+                (0.0, 0.0)
+            } else {
+                let n = app.frame_times.len() as f32;
+                let avg = app.frame_times.iter().sum::<f32>() / n;
+                (1.0 / avg.max(1e-6), avg * 1000.0)
+            };
+            let eval_ms = app
+                .last_eval_duration
+                .map(|d| format!("{:.0} ms", d.as_secs_f64() * 1e3))
+                .unwrap_or_else(|| "—".into());
+            theme::chip(
+                ui,
+                icons::TIMER,
+                format!("eval {eval_ms}"),
+                "Wall time of the last full evaluation",
+            );
+            theme::chip(
+                ui,
+                icons::FPS,
+                format!("{fps:.0} fps · {frame_ms:.1} ms"),
+                "Rolling frame rate and frame time",
+            );
+            theme::chip(
+                ui,
+                icons::TRIANGLE,
+                format!("{tris} tris"),
+                "Triangles currently rendered",
+            );
+            theme::chip(ui, icons::BODIES, format!("{bodies}"), "Solid bodies");
+            theme::chip(
+                ui,
+                state_icon,
+                eval_state.into(),
+                "Background evaluation worker",
+            );
+
+            // S-05: live sketch diagnostics for the selected sketch.
+            if let Some(sketch_id) = app.selection.primary_feature() {
+                if let Some(report) = app
+                    .last_evaluation
+                    .as_ref()
+                    .and_then(|ev| ev.sketch_reports.get(&sketch_id))
+                {
+                    let (text, color, glyph) = if report.dof_balance > 0 {
+                        (
+                            format!("{} DOF", report.dof_balance),
+                            theme::MUTED,
+                            icons::ELLIPSIS,
+                        )
+                    } else if report.dof_balance < 0 {
+                        (
+                            format!("over-constrained {}", -report.dof_balance),
+                            theme::ERR,
+                            icons::ERROR,
+                        )
+                    } else {
+                        (
+                            "fully constrained".to_string(),
+                            theme::OK,
+                            icons::CHECK_CIRCLE,
+                        )
+                    };
+                    // A colored diagnostics chip before the neutral ones.
+                    let frame = egui::Frame::new()
+                        .fill(theme::SURFACE)
+                        .corner_radius(5)
+                        .inner_margin(egui::Margin::symmetric(7, 2));
+                    frame
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(icons::colored(glyph, 11.5, color));
+                                ui.label(egui::RichText::new(text).size(11.5).color(color));
+                            });
+                        })
+                        .response
+                        .on_hover_text("Live sketch solver report (S-05)");
+                }
             }
-        }
-        ui.label(format!("features: {}", app.doc.tree.len()));
-        if !app.doc.params.is_empty() {
-            ui.separator();
-            ui.label(format!("params: {}", app.doc.params.len()));
-        }
-        ui.separator();
-        if app.commands.can_undo() {
-            ui.label(format!("undo depth: {}", app.commands.undo_depth()));
-            ui.separator();
-        }
-        ui.label("mm");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(&app.status).weak());
         });
     });
 }
@@ -1079,8 +1481,7 @@ pub fn status_bar(ui: &mut egui::Ui, app: &ForgeApp) {
 /// undoable edits and per-row deletion. Angle parameters display degrees
 /// (stored as radians).
 pub fn params_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
-    ui.heading("Parameters");
-    ui.separator();
+    crate::theme::section_header(ui, crate::icons::PARAMS, "Parameters");
     if app.doc.params.is_empty() {
         ui.label(
             egui::RichText::new(
@@ -1210,52 +1611,146 @@ pub fn params_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
     }
 }
 
-/// The command palette overlay (FR-UI-01).
+/// The command palette overlay (FR-UI-01): searchable list of every
+/// command with icons, ↑/↓/↵ keyboard navigation and hover sync.
 pub fn palette_overlay(ctx: &egui::Context, app: &mut ForgeApp) {
+    use crate::icons;
+    use crate::theme;
+
     if !app.palette_open {
         return;
     }
+
+    // Pull navigation keys out of this frame's event stream BEFORE the
+    // search field sees them (a single-line query never needs ↑/↓/↵,
+    // so they belong to the list).
+    let mut up = false;
+    let mut down = false;
+    let mut enter = false;
+    ctx.input_mut(|i| {
+        i.events.retain(|e| match e {
+            egui::Event::Key {
+                key: egui::Key::ArrowDown,
+                pressed: true,
+                ..
+            } => {
+                down = true;
+                false
+            }
+            egui::Event::Key {
+                key: egui::Key::ArrowUp,
+                pressed: true,
+                ..
+            } => {
+                up = true;
+                false
+            }
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                ..
+            } => {
+                enter = true;
+                false
+            }
+            _ => true,
+        });
+    });
+
+    let mut run_action: Option<PaletteAction> = None;
+
     egui::Window::new("Command Palette")
-        .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
-        .fixed_size([520.0, 360.0])
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 56.0])
+        .fixed_size([540.0, 400.0])
         .collapsible(false)
         .resizable(false)
+        .title_bar(false)
         .show(ctx, |ui| {
-            ui.text_edit_singleline(&mut app.palette_query);
-            ui.add_space(4.0);
-            let query = app.palette_query.clone();
-            let mut scored: Vec<(usize, usize, &'static str, PaletteAction)> = entries()
-                .into_iter()
-                .enumerate()
-                .filter_map(|(i, e)| {
-                    fuzzy_score(&query, e.label, e.keywords).map(|s| (s, i, e.label, e.action))
-                })
-                .collect();
-            scored.sort_by_key(|(s, i, _, _)| *s * 1000 + *i);
-
-            let mut run_idx: Option<PaletteAction> = None;
-            let mut hovered = false;
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for (rank, idx, label, action) in scored.iter().take(12) {
-                    let selected = *idx == 0 && query.is_empty();
-                    let _ = selected;
-                    let response =
-                        ui.selectable_label(false, format!("{:>4}  {label}", (*rank).min(999)));
-                    if response.clicked() {
-                        run_idx = Some(*action);
-                    }
-                    if response.hovered() {
-                        hovered = true;
-                    }
+            // -- Search field -------------------------------------------------
+            ui.horizontal(|ui| {
+                ui.label(icons::colored(icons::SEARCH, 15.0, theme::MUTED));
+                let edit = egui::TextEdit::singleline(&mut app.palette_query)
+                    .hint_text("Search commands…")
+                    .margin(egui::Margin::symmetric(8, 6))
+                    .desired_width(ui.available_width());
+                let response = ui.add(edit);
+                // Claim keyboard focus when nothing else has it.
+                if !ui.ctx().egui_wants_keyboard_input() {
+                    response.request_focus();
                 }
             });
-            let _ = hovered;
+
+            ui.add_space(6.0);
+            ui.separator();
+
+            // -- Matching rows ---------------------------------------------
+            let query = app.palette_query.clone();
+            let mut scored: Vec<(usize, char, &'static str, PaletteAction)> = entries()
+                .into_iter()
+                .filter_map(|e| {
+                    fuzzy_score(&query, e.label, e.keywords)
+                        .map(|score| (score, e.icon, e.label, e.action))
+                })
+                .collect();
+            scored.sort_by_key(|(score, _, _, _)| *score);
+
+            let visible = 14usize;
+            app.palette_cursor = app.palette_cursor.min(scored.len().saturating_sub(1));
+            if up {
+                app.palette_cursor = app.palette_cursor.saturating_sub(1);
+            }
+            if down {
+                app.palette_cursor = (app.palette_cursor + 1).min(scored.len().saturating_sub(1));
+            }
+
+            let mut hovered_row: Option<usize> = None;
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    if scored.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("No matching commands").weak());
+                    }
+                    for (row, (_, icon, label, action)) in scored.iter().enumerate().take(visible) {
+                        let is_cursor = row == app.palette_cursor;
+                        let response =
+                            ui.selectable_label(is_cursor, icons::icon_label(*icon, label));
+                        if response.clicked() {
+                            run_action = Some(*action);
+                        }
+                        if response.hovered() {
+                            hovered_row = Some(row);
+                        }
+                    }
+                });
+            if let Some(h) = hovered_row {
+                app.palette_cursor = h;
+            }
+
+            // -- Footer hint -------------------------------------------------
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(icons::colored(icons::COMMAND, 11.0, theme::MUTED));
+                ui.label(
+                    egui::RichText::new("↑ ↓ navigate    ↵ run    esc close")
+                        .size(11.0)
+                        .color(theme::MUTED),
+                );
+            });
+
+            if enter {
+                if let Some((_, _, _, action)) = scored.get(app.palette_cursor) {
+                    run_action = Some(*action);
+                }
+            }
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 app.palette_open = false;
             }
-            if let Some(action) = run_idx {
-                app.palette_open = false;
-                action.run(app);
-            }
         });
+
+    if let Some(action) = run_action {
+        app.palette_open = false;
+        app.palette_cursor = 0;
+        action.run(app);
+    }
 }

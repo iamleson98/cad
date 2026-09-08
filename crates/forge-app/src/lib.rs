@@ -14,8 +14,10 @@ pub mod app;
 pub mod background;
 pub mod crash;
 pub mod gizmo;
+pub mod icons;
 pub mod palette;
 pub mod picking;
+pub mod theme;
 pub mod ui;
 pub mod viewport;
 

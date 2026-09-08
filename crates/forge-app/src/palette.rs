@@ -1,6 +1,7 @@
 //! Command palette (FR-UI-01) and palette actions.
 
 use crate::app::ForgeApp;
+use crate::icons;
 use forge_core::{FeatureId, Point2, Point3, SketchId, Vector3};
 use forge_geometry::ExtrudeDirection;
 use forge_model::{
@@ -16,6 +17,8 @@ pub struct PaletteEntry {
     pub label: &'static str,
     /// Keyword hint for fuzzy matching.
     pub keywords: &'static str,
+    /// Lucide glyph for the palette row (crate::icons).
+    pub icon: char,
     /// The action.
     pub action: PaletteAction,
 }
@@ -27,271 +30,325 @@ pub fn entries() -> Vec<PaletteEntry> {
         PaletteEntry {
             label: "Add Box",
             keywords: "primitive solid box",
+            icon: icons::BOX,
             action: AddBox,
         },
         PaletteEntry {
             label: "Add Sphere",
             keywords: "primitive solid sphere",
+            icon: icons::SPHERE,
             action: AddSphere,
         },
         PaletteEntry {
             label: "Add Cylinder",
             keywords: "primitive solid cylinder",
+            icon: icons::CYLINDER,
             action: AddCylinder,
         },
         PaletteEntry {
             label: "Add Cone",
             keywords: "primitive solid cone",
+            icon: icons::CONE,
             action: AddCone,
         },
         PaletteEntry {
             label: "Add Torus",
             keywords: "primitive solid torus",
+            icon: icons::TORUS,
             action: AddTorus,
         },
         PaletteEntry {
             label: "New Sketch: rectangle on XY",
             keywords: "sketch draw rectangle profile",
+            icon: icons::SKETCH,
             action: NewSketchXY,
         },
         PaletteEntry {
             label: "New Sketch: rectangle on YZ",
             keywords: "sketch draw rectangle",
+            icon: icons::SKETCH,
             action: NewSketchYZ,
         },
         PaletteEntry {
             label: "New Sketch: rectangle on XZ",
             keywords: "sketch draw rectangle",
+            icon: icons::SKETCH,
             action: NewSketchXZ,
         },
         PaletteEntry {
             label: "New Sketch: slot on XY",
             keywords: "sketch draw slot obround stadium hole",
+            icon: icons::SKETCH,
             action: NewSketchSlotXY,
         },
         PaletteEntry {
             label: "New Sketch: hexagon on XY",
             keywords: "sketch draw polygon hexagon bolt",
+            icon: icons::SKETCH,
             action: NewSketchHexXY,
         },
         PaletteEntry {
             label: "New datum plane: XY + 20 mm offset",
             keywords: "datum plane offset reference construction",
+            icon: icons::DATUM,
             action: NewDatumOffsetXY,
         },
         PaletteEntry {
             label: "New datum plane: XY tilted 30\u{00b0}",
             keywords: "datum plane angle tilt reference",
+            icon: icons::DATUM,
             action: NewDatumAngleXY,
         },
         PaletteEntry {
             label: "New Sketch: rectangle on latest datum",
             keywords: "sketch datum carrier rectangle profile",
+            icon: icons::SKETCH,
             action: NewSketchOnLatestDatum,
         },
         PaletteEntry {
             label: "Hole: drill latest body at latest sketch points",
             keywords: "hole drill bore counterbore countersink wizard",
+            icon: icons::DRILL,
             action: HoleLastBody,
         },
         PaletteEntry {
             label: "Mirror latest body across latest datum",
             keywords: "mirror reflect datum plane symmetry",
+            icon: icons::MIRROR,
             action: MirrorLastDatum,
         },
         PaletteEntry {
             label: "Extrude latest sketch (new body)",
             keywords: "extrude boss solid",
+            icon: icons::EXTRUDE,
             action: ExtrudeLastSketch,
         },
         PaletteEntry {
             label: "Cut latest body with cylinder",
             keywords: "boolean cut drill hole",
+            icon: icons::SUBTRACT,
             action: CutWithCylinder,
         },
         PaletteEntry {
             label: "Union two latest bodies",
             keywords: "boolean union combine",
+            icon: icons::UNION,
             action: UnionLastTwo,
         },
         PaletteEntry {
             label: "Subtract two latest bodies",
             keywords: "boolean difference subtract",
+            icon: icons::SUBTRACT,
             action: DifferenceLastTwo,
         },
         PaletteEntry {
             label: "Intersect two latest bodies",
             keywords: "boolean intersection",
+            icon: icons::INTERSECT,
             action: IntersectLastTwo,
         },
         PaletteEntry {
             label: "Linear pattern latest body (x4)",
             keywords: "pattern array repeat copy linear",
+            icon: icons::LINEAR_PATTERN,
             action: LinearPatternLast,
         },
         PaletteEntry {
             label: "Circular pattern latest body (x6)",
             keywords: "pattern array repeat copy circular polar",
+            icon: icons::CIRCULAR_PATTERN,
             action: CircularPatternLast,
         },
         PaletteEntry {
             label: "Mirror latest body across YZ",
             keywords: "mirror reflect symmetry plane",
+            icon: icons::MIRROR,
             action: MirrorLastYZ,
         },
         PaletteEntry {
             label: "Delete selected feature",
             keywords: "remove feature",
+            icon: icons::DELETE,
             action: DeleteSelected,
         },
         PaletteEntry {
             label: "Suppress selected feature",
             keywords: "toggle suppress",
+            icon: icons::EYE_OFF,
             action: SuppressSelected,
         },
         PaletteEntry {
             label: "Undo",
             keywords: "history revert",
+            icon: icons::UNDO,
             action: Undo,
         },
         PaletteEntry {
             label: "Redo",
             keywords: "history forward",
+            icon: icons::REDO,
             action: Redo,
         },
         PaletteEntry {
             label: "Fit view",
             keywords: "zoom frame camera",
+            icon: icons::FIT,
             action: FitView,
         },
         PaletteEntry {
             label: "Toggle perspective / orthographic",
             keywords: "projection camera",
+            icon: icons::AXIS_3D,
             action: ToggleProjection,
         },
         PaletteEntry {
             label: "Front view",
             keywords: "camera",
+            icon: icons::CAMERA,
             action: FrontView,
         },
         PaletteEntry {
             label: "Top view",
             keywords: "camera",
+            icon: icons::CAMERA,
             action: TopView,
         },
         PaletteEntry {
             label: "Right view",
             keywords: "camera",
+            icon: icons::CAMERA,
             action: RightView,
         },
         PaletteEntry {
             label: "Isometric view",
             keywords: "camera iso",
+            icon: icons::CAMERA,
             action: IsoView,
         },
         PaletteEntry {
             label: "Toggle ground grid",
             keywords: "grid",
+            icon: icons::GRID,
             action: ToggleGrid,
         },
         PaletteEntry {
             label: "Toggle feature edges",
             keywords: "edges lines",
+            icon: icons::EDGES,
             action: ToggleEdges,
         },
         PaletteEntry {
             label: "Save document (.forgecad)",
             keywords: "file save native",
+            icon: icons::SAVE,
             action: SaveNative,
         },
         PaletteEntry {
             label: "Export STL",
             keywords: "file export mesh",
+            icon: icons::EXPORT,
             action: ExportSTL,
         },
         PaletteEntry {
             label: "Export OBJ",
             keywords: "file export mesh",
+            icon: icons::EXPORT,
             action: ExportOBJ,
         },
         PaletteEntry {
             label: "Export glTF",
             keywords: "file export mesh",
+            icon: icons::EXPORT,
             action: ExportGLTF,
         },
         PaletteEntry {
             label: "Export 3MF",
             keywords: "file export mesh 3d print package zip",
+            icon: icons::EXPORT,
             action: Export3MF,
         },
         PaletteEntry {
             label: "Import mesh from current directory (stl / obj / 3mf)",
             keywords: "file import mesh stl obj 3mf load",
+            icon: icons::IMPORT,
             action: ImportMeshDir,
         },
         PaletteEntry {
             label: "Display: shaded",
             keywords: "view display mode shaded render",
+            icon: icons::SHADED,
             action: DisplayShaded,
         },
         PaletteEntry {
             label: "Display: wireframe (hidden line)",
             keywords: "view display mode wireframe hidden line render",
+            icon: icons::WIREFRAME,
             action: DisplayWireframe,
         },
         PaletteEntry {
             label: "Display: x-ray (translucent)",
             keywords: "view display mode xray ghost transparent render",
+            icon: icons::XRAY,
             action: DisplayXRay,
         },
         PaletteEntry {
             label: "Section view: toggle cut plane",
             keywords: "view section clip cut slice",
+            icon: icons::SECTION,
             action: ToggleSection,
         },
         PaletteEntry {
             label: "Measure: two-pick distance + angle",
             keywords: "measure distance angle inspect dimension",
+            icon: icons::MEASURE,
             action: ToggleMeasure,
         },
         PaletteEntry {
             label: "Gizmo: move (translate) mode",
             keywords: "gizmo manipulator move translate drag handle",
+            icon: icons::MOVE_3D,
             action: GizmoTranslate,
         },
         PaletteEntry {
             label: "Gizmo: rotate mode",
             keywords: "gizmo manipulator rotate spin ring handle",
+            icon: icons::ROTATE_3D,
             action: GizmoRotate,
         },
         PaletteEntry {
             label: "Select: faces (sub-body picking)",
             keywords: "select picking face cluster sub-body",
+            icon: icons::SKETCH_ON_FACE,
             action: PickFaces,
         },
         PaletteEntry {
             label: "Select: edges (sharp chains)",
             keywords: "select picking edge chain sub-body",
+            icon: icons::EDGES,
             action: PickEdges,
         },
         PaletteEntry {
             label: "Select: vertices",
             keywords: "select picking vertex corner sub-body",
+            icon: icons::TARGET,
             action: PickVertices,
         },
         PaletteEntry {
             label: "Select: bodies",
             keywords: "select picking whole body solid",
+            icon: icons::BODIES,
             action: PickBodies,
         },
         PaletteEntry {
             label: "New sketch on selected face",
             keywords: "sketch face planar profile draw",
+            icon: icons::SKETCH_ON_FACE,
             action: SketchOnSelectedFace,
         },
         PaletteEntry {
             label: "Mirror selected sketch entities (about first line)",
             keywords: "sketch mirror symmetric reflect copy s08",
+            icon: icons::MIRROR,
             action: MirrorSelectedSketch,
         },
     ]
