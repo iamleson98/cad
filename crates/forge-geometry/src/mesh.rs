@@ -13,6 +13,7 @@
 //! - *vertices* are mesh corner positions after welding.
 
 use forge_core::{BBox3, Point3, Transform, Vector3};
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -110,29 +111,31 @@ impl TriMesh {
 
         // Parallel: triangle normals + corner angles.
         // (Per-triangle indices + weighted corner contributions.)
+        // wasm32 (no threads): the same closure runs on a serial iterator.
         type TriAcc = ([u32; 3], Option<(Vector3, [f64; 3])>);
-        let tri_data: Vec<TriAcc> = (0..tri_count)
-            .into_par_iter()
-            .map(|i| {
-                let idx = self.triangle_idx(i);
-                let n = self.triangle_normal(i);
-                let angles = n.map(|n| {
-                    let [a, b, c] = self.triangle(i);
-                    let ang = |p: Point3, q: Point3, r: Point3| -> f64 {
-                        let u = q - p;
-                        let v = r - p;
-                        let denom = u.norm() * v.norm();
-                        if denom < 1e-20 {
-                            0.0
-                        } else {
-                            (u.dot(&v) / denom).clamp(-1.0, 1.0).acos()
-                        }
-                    };
-                    (n, [ang(a, b, c), ang(b, c, a), ang(c, a, b)])
-                });
-                (idx, angles)
-            })
-            .collect();
+        let corner = |i: usize| {
+            let idx = self.triangle_idx(i);
+            let n = self.triangle_normal(i);
+            let angles = n.map(|n| {
+                let [a, b, c] = self.triangle(i);
+                let ang = |p: Point3, q: Point3, r: Point3| -> f64 {
+                    let u = q - p;
+                    let v = r - p;
+                    let denom = u.norm() * v.norm();
+                    if denom < 1e-20 {
+                        0.0
+                    } else {
+                        (u.dot(&v) / denom).clamp(-1.0, 1.0).acos()
+                    }
+                };
+                (n, [ang(a, b, c), ang(b, c, a), ang(c, a, b)])
+            });
+            (idx, angles)
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let tri_data: Vec<TriAcc> = (0..tri_count).into_par_iter().map(corner).collect();
+        #[cfg(target_arch = "wasm32")]
+        let tri_data: Vec<TriAcc> = (0..tri_count).map(corner).collect();
 
         for ([a, b, c], data) in tri_data {
             if let Some((n, [wa, wb, wc])) = data {
@@ -143,14 +146,18 @@ impl TriMesh {
         }
 
         // Parallel: normalize.
-        acc.par_iter_mut().for_each(|n| {
+        let normalize = |n: &mut Vector3| {
             let len = n.norm();
             if len > 1e-20 {
                 *n /= len;
             } else {
                 *n = Vector3::z();
             }
-        });
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        acc.par_iter_mut().for_each(normalize);
+        #[cfg(target_arch = "wasm32")]
+        acc.iter_mut().for_each(normalize);
 
         self.normals = Some(acc);
     }

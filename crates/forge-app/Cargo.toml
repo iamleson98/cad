@@ -24,14 +24,34 @@ egui-wgpu = { workspace = true }
 wgpu = { workspace = true }
 
 nalgebra = { workspace = true }
-rayon = { workspace = true }
-tokio = { workspace = true }
 serde = { workspace = true }
 ron = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = "0.4"
+
+# Native-only: threads, async file I/O and stderr logging do not exist
+# on wasm32 (W-10). The wasm build evaluates synchronously on the UI
+# thread and uses browser downloads for exports.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true }
 env_logger = "0.11"
+
+# Web-only: the WebRunner entry point and the browser download helper.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlAnchorElement",
+    "HtmlCanvasElement",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+] }
 
 [dev-dependencies]
 approx = "0.5"

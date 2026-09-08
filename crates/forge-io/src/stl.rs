@@ -14,6 +14,12 @@ const BINARY_HEADER_LEN: usize = 80;
 
 /// Write one or more bodies as a single binary STL.
 pub fn write_binary_stl(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
+    std::fs::write(path, binary_stl_bytes(meshes))?;
+    Ok(())
+}
+
+/// Serialize meshes as binary STL into memory (wasm: browser download).
+pub fn binary_stl_bytes(meshes: &[ExportMesh]) -> Vec<u8> {
     let tris: usize = meshes.iter().map(|m| m.mesh.tri_count()).sum();
     let mut buf: Vec<u8> = Vec::with_capacity(BINARY_HEADER_LEN + 4 + tris * 50);
     buf.extend_from_slice(b"ForgeCAD binary STL export".as_slice());
@@ -22,8 +28,7 @@ pub fn write_binary_stl(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
     for m in meshes {
         append_binary_mesh(&mut buf, &m.mesh);
     }
-    std::fs::write(path, buf)?;
-    Ok(())
+    buf
 }
 
 fn append_binary_mesh(buf: &mut Vec<u8>, mesh: &TriMesh) {
@@ -77,10 +82,16 @@ pub fn write_ascii_stl(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
     Ok(())
 }
 
-/// Read an STL file (binary or ASCII, auto-detected).
+/// Read an STL file into a repaired mesh (I-01).
 pub fn read_stl(path: &Path) -> Result<TriMesh> {
     let mut data = Vec::new();
     std::fs::File::open(path)?.read_to_end(&mut data)?;
+    read_stl_bytes(&data)
+}
+
+/// Parse STL from bytes: binary (size-checked) or ASCII (heuristic).
+/// Pure — no filesystem access, safe on wasm.
+pub fn read_stl_bytes(data: &[u8]) -> Result<TriMesh> {
     if data.len() < BINARY_HEADER_LEN + 4 {
         return Err(IoError::Malformed("file too small".into()));
     }
@@ -93,9 +104,9 @@ pub fn read_stl(path: &Path) -> Result<TriMesh> {
     ) as usize;
     let expected = BINARY_HEADER_LEN + 4 + count * 50;
     if data.len() == expected && count > 0 {
-        read_binary(&data, count)
-    } else if looks_ascii(&data) {
-        read_ascii(&data)
+        read_binary(data, count)
+    } else if looks_ascii(data) {
+        read_ascii(data)
     } else {
         Err(IoError::Malformed(format!(
             "not a valid STL file (size {}, declared {} triangles)",

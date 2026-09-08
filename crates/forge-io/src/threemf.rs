@@ -72,8 +72,15 @@ fn get_u32(data: &[u8], off: usize) -> Option<u32> {
     Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
-/// Write a ZIP archive with deflate-compressed entries.
+/// Write the ZIP archive to a path. Only used by tests that need a
+/// package on disk; production code goes through [`zip_bytes`].
+#[cfg(test)]
 fn write_zip(path: &Path, entries: &[ZipEntry]) -> std::io::Result<()> {
+    std::fs::write(path, zip_bytes(entries))
+}
+
+/// Build the ZIP archive in memory (wasm: browser download).
+fn zip_bytes(entries: &[ZipEntry]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let mut central: Vec<u8> = Vec::new();
     // Fixed timestamp 1980-01-01 00:00 (DOS date must be >= 1980).
@@ -128,7 +135,7 @@ fn write_zip(path: &Path, entries: &[ZipEntry]) -> std::io::Result<()> {
     put_u32(&mut out, cd_size);
     put_u32(&mut out, cd_offset);
     put_u16(&mut out, 0); // comment len
-    std::fs::write(path, out)
+    out
 }
 
 /// Read a ZIP archive: all entries, decompressed and CRC-verified.
@@ -446,6 +453,14 @@ Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/>\
 
 /// Write a 3MF package with one object per mesh (I-02 export).
 pub fn write_3mf(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
+    let bytes = three_mf_bytes(meshes)?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// Serialize meshes as a 3MF package into memory (wasm: browser
+/// download). `write_3mf` writes the same bytes to a path.
+pub fn three_mf_bytes(meshes: &[ExportMesh]) -> Result<Vec<u8>> {
     if meshes.is_empty() {
         return Err(IoError::Malformed("no meshes to export".into()));
     }
@@ -499,8 +514,7 @@ xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">
             data: model.into_bytes(),
         },
     ];
-    write_zip(path, &entries)?;
-    Ok(())
+    Ok(zip_bytes(&entries))
 }
 
 // ---------------------------------------------------------------------------
@@ -594,7 +608,13 @@ fn scaled_transform(mut t: Matrix4x3, scale: f64) -> Matrix4x3 {
 /// consistently oriented, ready to become body features.
 pub fn read_3mf(path: &Path) -> Result<Vec<(String, TriMesh)>> {
     let data = std::fs::read(path)?;
-    let entries = read_zip(&data)?;
+    read_3mf_bytes(&data)
+}
+
+/// Parse a 3MF package from bytes (wasm: dropped-file bytes). Pure —
+/// no filesystem access.
+pub fn read_3mf_bytes(data: &[u8]) -> Result<Vec<(String, TriMesh)>> {
+    let entries = read_zip(data)?;
     if entries.is_empty() {
         return Err(IoError::Malformed("3mf: empty package".into()));
     }

@@ -540,20 +540,31 @@ impl PaletteAction {
             Export3MF => app.export_mesh(forge_io::ExportFormat::ThreeMf),
 
             ImportMeshDir => {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                let candidates = [
-                    cwd.join("import.stl"),
-                    cwd.join("import.obj"),
-                    cwd.join("import.3mf"),
-                ];
-                let Some(path) = candidates.iter().find(|p| p.is_file()) else {
-                    app.set_status(
-                        "No import.stl / import.obj / import.3mf in the current \
-                         directory — or drag a file onto the window",
-                    );
-                    return;
-                };
-                app.import_file(path.clone());
+                // wasm: there is no current directory — drag-and-drop is
+                // the import path (W-10).
+                #[cfg(target_arch = "wasm32")]
+                {
+                    // No filesystem on wasm — the arm ends here (the
+                    // native branch below is cfg'd out).
+                    app.set_status("Drag a .stl / .obj / .3mf file onto the window to import it");
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let candidates = [
+                        cwd.join("import.stl"),
+                        cwd.join("import.obj"),
+                        cwd.join("import.3mf"),
+                    ];
+                    let Some(path) = candidates.iter().find(|p| p.is_file()) else {
+                        app.set_status(
+                            "No import.stl / import.obj / import.3mf in the current \
+                             directory — or drag a file onto the window",
+                        );
+                        return;
+                    };
+                    app.import_file(path.clone());
+                }
             }
 
             DisplayShaded => app.set_display_mode(forge_render::DisplayMode::Shaded),

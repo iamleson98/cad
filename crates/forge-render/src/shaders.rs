@@ -53,6 +53,10 @@ fn vs_main(
 struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) normal: vec4<f32>,
+    // W-10: NDC depth as COLOR (R32Float) — the composite pass cannot
+    // textureLoad depth textures on WebGL2, so the opaque pass copies
+    // the fragment depth where the composite can read it.
+    @location(2) depth_copy: vec4<f32>,
 };
 
 @fragment
@@ -101,6 +105,7 @@ fn fs_main(in: VsOut) -> FsOut {
     var out: FsOut;
     out.color = vec4<f32>(lit, alpha);
     out.normal = vec4<f32>(normalize(in.normal) * 0.5 + 0.5, 1.0);
+    out.depth_copy = vec4<f32>(in.position.z, 0.0, 0.0, 0.0);
     return out;
 }
 "#;
@@ -133,10 +138,17 @@ struct VsOut {
     @builtin(position) position: vec4<f32>,
 };
 
+// Depth nudge for lines (W-10): WebGL2 forbids depth bias on
+// non-triangle topologies, so sketch lines pull themselves toward
+// the camera in clip space instead (a constant NDC epsilon,
+// scene-scale independent). -2e-4 in NDC z ≈ the old -1/-1.0 bias.
+const LINE_DEPTH_NUDGE: f32 = 2.0e-4;
+
 @vertex
 fn vs_main(@location(0) pos: vec3<f32>) -> VsOut {
     var out: VsOut;
     out.position = camera.view_proj * model.model * vec4<f32>(pos, 1.0);
+    out.position.z -= LINE_DEPTH_NUDGE * out.position.w;
     return out;
 }
 
@@ -155,6 +167,7 @@ fn vs_main_clip(@location(0) pos: vec3<f32>) -> ClipOut {
     let world = model.model * vec4<f32>(pos, 1.0);
     var out: ClipOut;
     out.position = camera.view_proj * world;
+    out.position.z -= LINE_DEPTH_NUDGE * out.position.w;
     out.world_pos = world.xyz;
     return out;
 }
@@ -225,12 +238,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<u32> {
 /// The renderer runs `peel_layers` iterations of two passes over the
 /// transparent geometry, then one residual pass:
 ///
-/// 1. **Peel pass** (`fs_peel`) — depth-only attachment (`Depth32Float`,
-///    compare `Less`, cleared to 1.0). A fragment survives when it is
-///    strictly behind the previously peeled layer depth (sampled from
-///    `t_prev_layer`); the `Less` depth test keeps the minimum surviving
-///    depth, which becomes the next layer. Coplanar survivors merge via
-///    `LAYER_EPS`.
+/// 1. **Peel pass** (`fs_peel`) — an R32Float color target plus a
+///    scratch Depth32Float attachment (compare `Less`, cleared to
+///    1.0). A fragment survives when it is strictly behind the
+///    previously peeled layer depth (sampled from `t_prev_layer`);
+///    survivors write their NDC z as color, and the `Less` depth test
+///    makes the nearest survivor the last writer, so the target holds
+///    the minimum survivor depth — the next layer. Coplanar survivors
+///    merge via `LAYER_EPS`.
 /// 2. **Blend pass** (`fs_blend`) — fragments within `LAYER_EPS` of the
 ///    new front layer shade and blend **under** (premultiplied
 ///    front-to-back accumulation into `accum`), so nearer layers
@@ -262,8 +277,12 @@ struct Model {
 
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(0) var<uniform> model: Model;
-// Depth of the previously peeled front layer (Depth32Float).
-@group(0) @binding(1) var t_prev_layer: texture_depth_2d;
+// Front-layer depth bounds of the previous peel iteration, stored in the
+// R channel of an R32Float **color** target (W-03, W-10): `textureLoad`
+// from depth textures is unsupported on WebGL2/GLSL, so the renderer
+// min-accumulates survivor z through the depth-tested color write and
+// reads it back as a plain float texture.
+@group(0) @binding(1) var t_prev_layer: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
@@ -335,18 +354,22 @@ fn layer_alpha() -> f32 {
 }
 
 @fragment
-fn fs_peel(in: VsOut) {
+fn fs_peel(in: VsOut) -> @location(0) vec4<f32> {
     if (section_clipped(in.world_pos)) {
         discard;
     }
     let z = in.position.z;
-    let prev = textureLoad(t_prev_layer, vec2<i32>(in.position.xy), 0);
+    let prev = textureLoad(t_prev_layer, vec2<i32>(in.position.xy), 0).r;
     if (z <= prev + LAYER_EPS) {
         // This layer or nearer — not a survivor.
         discard;
     }
-    // Survivors leave their depth; the Less depth test on the
-    // cleared-to-1.0 attachment keeps the minimum → next layer.
+    // Survivors write their z to the R32Float color target. The pass's
+    // depth test (Less on a scratch cleared to 1.0) makes the NEAREST
+    // survivor the last writer per pixel, so color.r = min survivor
+    // depth — the next layer bound — without any blending (32-bit
+    // float blending is unavailable on WebGL2).
+    return vec4<f32>(z, 0.0, 0.0, 0.0);
 }
 
 @fragment
@@ -355,7 +378,7 @@ fn fs_blend(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let z = in.position.z;
-    let front = textureLoad(t_prev_layer, vec2<i32>(in.position.xy), 0);
+    let front = textureLoad(t_prev_layer, vec2<i32>(in.position.xy), 0).r;
     if (z > front + LAYER_EPS) {
         // Behind the front-most survivor — a later layer.
         discard;
@@ -371,7 +394,7 @@ fn fs_blend_residual(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let z = in.position.z;
-    let last = textureLoad(t_prev_layer, vec2<i32>(in.position.xy), 0);
+    let last = textureLoad(t_prev_layer, vec2<i32>(in.position.xy), 0).r;
     if (z <= last + LAYER_EPS) {
         // Already peeled — blended by a layer pass.
         discard;
@@ -383,10 +406,12 @@ fn fs_blend_residual(in: VsOut) -> @location(0) vec4<f32> {
 "#;
 
 /// Composite pass: fullscreen triangle reading the HDR color, view normal
-/// and depth buffers; applies screen-space edge detection (Sobel over
+/// and depth-copy buffers; applies screen-space edge detection (Sobel over
 /// depth + normal gradients – the "screen-space derivative" technique for
 /// silhouette/hidden-line rendering, FR-RD-03), tone mapping and the
-/// background.
+/// background. The depth copy is an R32Float color target written by the
+/// opaque mesh pass (W-10: WebGL2 textureLoad on depth textures returns
+/// zeros).
 ///
 /// `t_accum` (W-03) carries the front-to-back under-blended transparency
 /// accumulation (premultiplied); it composites under the tone-mapped
@@ -402,7 +427,7 @@ struct Camera {
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var t_color: texture_2d<f32>;
 @group(0) @binding(2) var t_normal: texture_2d<f32>;
-@group(0) @binding(3) var t_depth: texture_2d<f32>;
+@group(0) @binding(3) var t_depth: texture_2d<f32>; // R32Float depth copy (W-10)
 // W-03: premultiplied front-to-back transparency accumulation.
 @group(0) @binding(5) var t_accum: texture_2d<f32>;
 
@@ -465,11 +490,13 @@ fn fs_main(@builtin(position) frag_px: vec4<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(art, 1.0);
     }
 
-    // Scene color: the shaded geometry, or the background.
-    var scene = bg_grad;
-    if (has_geometry) {
-        scene = textureLoad(t_color, uv, 0).rgb;
-    }
+    // Scene color over the background gradient. `t_color` is
+    // premultiplied (cleared transparent; opaque geometry writes
+    // alpha 1, the line pass alpha-blends the grid/edges), so the
+    // ground grid and feature lines composite over the background
+    // too — not only where the depth copy says "geometry".
+    let color_buf = textureLoad(t_color, uv, 0);
+    let scene = color_buf.rgb + (1.0 - color_buf.a) * bg_grad;
 
     // W-03: composite the transparency accumulation under the scene
     // (premultiplied, front-to-back).

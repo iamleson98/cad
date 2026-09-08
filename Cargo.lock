@@ -1272,13 +1272,16 @@ dependencies = [
  "forge-model",
  "forge-render",
  "forge-sketch",
+ "js-sys",
  "log",
  "nalgebra",
- "rayon",
  "ron",
  "serde",
  "thiserror 2.0.20",
  "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wgpu",
 ]
 
@@ -1290,6 +1293,7 @@ dependencies = [
  "nalgebra",
  "serde",
  "thiserror 2.0.20",
+ "web-time",
 ]
 
 [[package]]

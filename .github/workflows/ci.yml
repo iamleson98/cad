@@ -79,3 +79,43 @@ jobs:
 
       - name: Tests (unit + doc)
         run: cargo test --workspace --locked
+
+  # W-10: the wasm32 browser build. Compiles the whole workspace for
+  # wasm32-unknown-unknown (zero warnings) and builds the trunk bundle
+  # (wasm-bindgen + wasm-opt) that `crates/forge-app/dist` mirrors.
+  wasm:
+    name: wasm32 — check + clippy + trunk bundle
+    needs: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable + clippy + wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: forgecad-ci-wasm
+
+      - name: Compile check (wasm32, locked deps)
+        run: cargo check --workspace --locked --target wasm32-unknown-unknown
+
+      - name: Clippy (wasm32, deny warnings)
+        run: cargo clippy --workspace --locked --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Install trunk
+        uses: jetli/trunk-action@v0.5.0
+        with:
+          version: "0.21.14"
+
+      - name: Build the browser bundle
+        working-directory: crates/forge-app
+        env:
+          # wasm-bindgen + wasm-opt are fetched automatically by trunk.
+          NO_COLOR: ""
+        run: trunk build --release

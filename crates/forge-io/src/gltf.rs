@@ -12,6 +12,14 @@ use std::path::Path;
 
 /// Write meshes to a self-contained `.gltf` file (embedded base64 buffer).
 pub fn write_gltf(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
+    let bytes = gltf_bytes(meshes)?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// Serialize meshes as a self-contained glTF JSON (embedded base64
+/// buffer) into memory (wasm: browser download).
+pub fn gltf_bytes(meshes: &[ExportMesh]) -> Result<Vec<u8>> {
     if meshes.is_empty() {
         return Err(crate::IoError::Malformed("no meshes to export".into()));
     }
@@ -179,8 +187,7 @@ pub fn write_gltf(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
 
     let bytes = serde_json::to_vec_pretty(&gltf)
         .map_err(|e| crate::IoError::Serde(format!("json encode: {e}")))?;
-    std::fs::write(path, bytes)?;
-    Ok(())
+    Ok(bytes)
 }
 
 #[cfg(test)]

@@ -16,11 +16,15 @@
 //! - [`error`] – common error type
 //! - [`tessellation`] – tessellation quality settings shared between
 //!   evaluation and rendering
+//! - [`time`] – cross-platform timing (`std::time` semantics; on
+//!   wasm32 `Instant`/`SystemTime` come from `web-time`, which panics
+//!   in `std`)
 
 pub mod error;
 pub mod ids;
 pub mod math;
 pub mod tessellation;
+pub mod time;
 pub mod units;
 
 pub use error::CoreError;

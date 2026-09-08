@@ -161,6 +161,12 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
 
     // ---- Paint callback ----
     if let Some(renderer) = app.renderer() {
+        // Upload the scene (no-op when the version is unchanged).
+        // W-10 regression fix: this call was lost in the PR-08 UI
+        // refactor — the renderer drew an empty scene forever.
+        if let Ok(mut r) = renderer.lock() {
+            r.update_scene(&app.scene);
+        }
         let callback = ViewportCallback::new(
             renderer.clone(),
             app.camera,

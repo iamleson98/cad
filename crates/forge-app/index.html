@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!--
+        ForgeCAD wasm shell (W-10). Trunk injects the wasm bootstrap;
+        `forge_app::start("forgecad_canvas")` (lib.rs) mounts the app.
+        Colors match crates/forge-app/src/theme.rs (forge-ember dark).
+    -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>ForgeCAD — Rust/WebGPU 3D CAD</title>
+    <!-- Trunk builds the wasm bin and injects the bootstrap script
+         (which runs `#[wasm_bindgen(start)]`... actually `main` with
+         wasm-bindgen) that mounts the app onto #forgecad_canvas. -->
+    <link data-trunk rel="rust" data-wasm-opt="2" />
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+            background: #15151b; /* theme PANEL */
+            color: #e6e6ee;      /* theme TEXT */
+            font-family: Inter, "Segoe UI", system-ui, sans-serif;
+        }
+        /* Canvas fills the viewport; eframe's ResizeObserver drives its
+           backing-store size. */
+        #forgecad_canvas {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            touch-action: none;
+        }
+        /* Loading veil: sits behind the canvas, visible until the first
+           frame paints over it. */
+        #loading {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+            z-index: -1;
+            pointer-events: none;
+        }
+        #loading .logo {
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+        #loading .logo em {
+            color: #ff7a45; /* forge ember accent */
+            font-style: normal;
+        }
+        #loading .hint {
+            font-size: 12px;
+            color: #8c8c9b; /* theme MUTED */
+        }
+    </style>
+</head>
+<body>
+    <canvas id="forgecad_canvas" tabindex="0"></canvas>
+    <div id="loading">
+        <div class="logo">Forge<em>CAD</em></div>
+        <div class="hint">Compiling shaders &amp; loading fonts…</div>
+    </div>
+</body>
+</html>

@@ -18,7 +18,7 @@ pub mod step;
 pub mod stl;
 pub mod threemf;
 
-pub use native::{load_document, save_document};
+pub use native::{document_from_str, document_to_string, load_document, save_document};
 pub use step::{StepFormat, STEP_EXTENSIONS};
 
 /// I/O error type.
@@ -137,22 +137,43 @@ pub fn import_meshes(
             path.display()
         )));
     }
+    import_meshes_bytes(format, &std::fs::read(path)?)
+}
+
+/// Import meshes from in-memory bytes (W-10: browser drag-and-drop on
+/// wasm supplies bytes, not paths). Same repair pipeline and format
+/// detection as [`import_meshes`].
+pub fn import_meshes_bytes(
+    format: ImportFormat,
+    data: &[u8],
+) -> Result<Vec<(String, forge_geometry::TriMesh)>> {
     match format {
-        ImportFormat::Stl => stl::read_stl(path).map(|m| vec![("mesh".into(), m)]),
-        ImportFormat::Obj => obj::read_obj(path).map(|m| vec![("mesh".into(), m)]),
-        ImportFormat::ThreeMf => threemf::read_3mf(path),
+        ImportFormat::Stl => stl::read_stl_bytes(data).map(|m| vec![("mesh".into(), m)]),
+        ImportFormat::Obj => {
+            obj::read_obj_bytes(&String::from_utf8_lossy(data)).map(|m| vec![("mesh".into(), m)])
+        }
+        ImportFormat::ThreeMf => threemf::read_3mf_bytes(data),
     }
 }
 
 /// Export meshes in the given format to `path`.
 pub fn export(format: ExportFormat, path: &std::path::Path, meshes: &[ExportMesh]) -> Result<()> {
+    let bytes = export_bytes(format, meshes)?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// Export meshes in the given format to an in-memory buffer (W-10:
+/// browser download on wasm). Produces the exact same bytes as
+/// [`export`].
+pub fn export_bytes(format: ExportFormat, meshes: &[ExportMesh]) -> Result<Vec<u8>> {
     if meshes.is_empty() {
         return Err(IoError::Malformed("no meshes to export".into()));
     }
     match format {
-        ExportFormat::Stl => stl::write_binary_stl(path, meshes),
-        ExportFormat::Obj => obj::write_obj(path, meshes),
-        ExportFormat::Gltf => gltf::write_gltf(path, meshes),
-        ExportFormat::ThreeMf => threemf::write_3mf(path, meshes),
+        ExportFormat::Stl => Ok(stl::binary_stl_bytes(meshes)),
+        ExportFormat::Obj => Ok(obj::obj_bytes(meshes)),
+        ExportFormat::Gltf => gltf::gltf_bytes(meshes),
+        ExportFormat::ThreeMf => threemf::three_mf_bytes(meshes),
     }
 }

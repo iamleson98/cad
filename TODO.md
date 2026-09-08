@@ -19,8 +19,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       warnings`, `cargo test --workspace`, cached builds, on every push/PR.
       *Done: `.github/workflows/ci.yml` — now a full 3-OS matrix
       (ubuntu/windows/macos) on every push, with fmt as a fast separate
-      gate job, per-OS rust-cache, fail-fast disabled, and a weekly cron
-      to keep caches warm. First 3-platform run green.*
+      gate job, per-OS rust-cache, fail-fast disabled, a weekly cron
+      to keep caches warm, and a dedicated wasm32 job (W-10: check +
+      clippy + trunk bundle). First 3-platform run green.*
 
 - [x] **F-01 Mirror feature** `(S)` `P0`
       Reflect a body across a datum plane (point + normal); winding order
@@ -266,6 +267,30 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       land with W-04 sub-body selection.*
 - [ ] **W-09 Infinite ground + shadows** `(S)` `P3`
       Shadow-only ground plane (shadow-mapped), grid fade, horizon.
+
+- [x] **W-10 WASM browser build** `(M)` `P2`
+      Same Rust code, compiled to `wasm32-unknown-unknown`, running in
+      the browser via WebGPU/WebGL2 + egui-wgpu: instant-shareable CAD
+      with no install.
+      *Done: `crates/forge-app` is now dual-target. `main.rs` runs the
+      `eframe::WebRunner` on `#forgecad_canvas` (`index.html` + trunk
+      pipeline, `Trunk.toml`); wasm-only `web.rs` turns exports into
+      browser downloads (blob URLs). Threading: the eval worker runs
+      synchronously on wasm (`background::EvalWorker`, no threads),
+      tokio/env_logger stay native-only via `cfg` gates. Timing:
+      `forge_core::time` re-exports `web-time` (`std::time::Instant`
+      panics on wasm32). WebGL2 renderer port, verified in-browser by
+      an autonomous agent (agent-browser + VLM screenshots): depth
+      peeling and the composite's depth read moved off depth-texture
+      sampling (`textureLoad` on depth textures is a WebGL2 no-go) —
+      peel bounds and a readable depth copy now live in R32Float color
+      targets; stencil ops dropped on Depth32Float attachments; line
+      depth bias replaced by a clip-space nudge in the shader; grid now
+      composites over the background (premultiplied `t_color`). Fixed
+      a lost-in-refactor regression: `Renderer::update_scene` was never
+      called, so nothing rendered at all (both targets). Exports
+      download; mesh import works via drag-and-drop. CI gained a
+      dedicated wasm job (check + clippy + trunk bundle).*
 
 ## Wave 4 — Interoperability
 

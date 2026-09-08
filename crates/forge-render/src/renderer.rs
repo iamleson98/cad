@@ -160,7 +160,17 @@ pub struct PickResult {
 
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// W-10: the readable depth copy (R32Float color target written by
+/// the opaque mesh pass; WebGL2 cannot textureLoad depth textures).
+const DEPTH_COPY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// W-03/W-10: peel-layer depth bounds live in the R channel of an
+/// R32Float **color** target. WebGL2/GLSL cannot `textureLoad` from
+/// depth textures, and 32-bit float *blending* needs an extension —
+/// instead the peel pass relies on its depth test (nearest survivor
+/// writes last) and reads the bounds as a plain float texture.
+const PEEL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
 
 /// Multi-pass renderer bound to a device/queue and an output format.
@@ -205,11 +215,16 @@ pub struct Renderer {
     target_size: (u32, u32),
     color_tex: Option<wgpu::Texture>,
     normal_tex: Option<wgpu::Texture>,
+    /// W-10: readable NDC depth copy (R32Float color target).
+    depth_copy_tex: Option<wgpu::Texture>,
     depth_tex: Option<wgpu::Texture>,
     pick_tex: Option<wgpu::Texture>,
     pick_depth_tex: Option<wgpu::Texture>,
-    /// W-03: ping-pong front-layer depth bounds (Depth32Float).
+    /// W-03: ping-pong front-layer depth bounds (R32Float color).
     peel_tex: [Option<wgpu::Texture>; 2],
+    /// W-03/W-10: scratch depth attachment for the peel pass (the Less
+    /// test makes the nearest survivor the last color writer).
+    peel_depth: Option<wgpu::Texture>,
     /// W-03: front-to-back under-blended transparency accumulation.
     accum_tex: Option<wgpu::Texture>,
 
@@ -338,6 +353,14 @@ impl Renderer {
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             }),
+            // W-10: NDC depth as an R32Float color target — the
+            // composite pass reads depth via textureLoad, which
+            // returns zeros for depth textures on WebGL2.
+            Some(wgpu::ColorTargetState {
+                format: DEPTH_COPY_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            }),
         ];
 
         let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -388,7 +411,11 @@ impl Renderer {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
+                        // R32Float peel bounds (W-10): a plain float
+                        // sample, NOT a depth texture — WebGL2 cannot
+                        // load depth textures, so peeling writes the
+                        // bounds as color.
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -442,11 +469,20 @@ impl Renderer {
         let peel_pipeline = make_peel_pipeline(
             "peel-pipeline",
             "fs_peel",
-            &[],
+            &[Some(wgpu::ColorTargetState {
+                format: PEEL_FORMAT,
+                // No blending: the Less depth test on the scratch
+                // attachment makes the nearest survivor the last
+                // writer, so color.r = min survivor z.
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
             wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                // Survivors min-accumulate into the cleared-to-1.0
-                // attachment: Less keeps the nearest survivor.
+                // Scratch depth (cleared to 1.0 per pass): the Less
+                // test min-accumulates survivor z through the color
+                // write — depth attachments are unreadable on WebGL2
+                // (W-10).
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
@@ -542,11 +578,9 @@ impl Renderer {
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState {
-                    constant: -1,
-                    slope_scale: -1.0,
-                    clamp: 0.0,
-                },
+                // No depth bias: WebGL2 rejects bias on LineList —
+                // the LINE_SHADER nudges clip-space z instead (W-10).
+                bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
@@ -776,10 +810,12 @@ impl Renderer {
             target_size: (0, 0),
             color_tex: None,
             normal_tex: None,
+            depth_copy_tex: None,
             depth_tex: None,
             pick_tex: None,
             pick_depth_tex: None,
             peel_tex: [None, None],
+            peel_depth: None,
             accum_tex: None,
             pending_pick: None,
             pick_readback: None,
@@ -926,6 +962,7 @@ impl Renderer {
         self.target_size = size;
         self.color_tex = None;
         self.normal_tex = None;
+        self.depth_copy_tex = None;
         self.depth_tex = None;
         self.pick_tex = None;
         self.pick_depth_tex = None;
@@ -956,6 +993,20 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: NORMAL_FORMAT,
+            usage,
+            view_formats: &[],
+        }));
+        self.depth_copy_tex = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth-copy-target"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_COPY_FORMAT,
             usage,
             view_formats: &[],
         }));
@@ -1003,8 +1054,11 @@ impl Renderer {
             view_formats: &[],
         }));
 
-        // W-03: ping-pong peel bounds + the accumulation target.
+        // W-03/W-10: ping-pong peel bounds (R32Float color targets —
+        // read back as plain float textures, WebGL2-safe) + one scratch
+        // depth attachment + the accumulation target.
         self.peel_tex = [None, None];
+        self.peel_depth = None;
         self.accum_tex = None;
         let make_peel_tex = |label: &str| {
             self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1017,15 +1071,29 @@ impl Renderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: DEPTH_FORMAT,
+                format: PEEL_FORMAT,
                 usage,
                 view_formats: &[],
             })
         };
         self.peel_tex = [
-            Some(make_peel_tex("peel-depth-a")),
-            Some(make_peel_tex("peel-depth-b")),
+            Some(make_peel_tex("peel-bounds-a")),
+            Some(make_peel_tex("peel-bounds-b")),
         ];
+        self.peel_depth = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("peel-scratch-depth"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        }));
         self.accum_tex = Some(self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("transparent-accum"),
             size: wgpu::Extent3d {
@@ -1041,14 +1109,14 @@ impl Renderer {
             view_formats: &[],
         }));
 
-        // Bind groups reading peel layer A / B (camera uniform + depth
-        // view). The sampled views use the Depth aspect explicitly.
+        // Bind groups reading peel layer A / B (camera uniform + the
+        // R32Float bounds as a plain color view).
         let make_peel_bg = |label: &str, tex: &wgpu::Texture| {
             let view = tex.create_view(&wgpu::TextureViewDescriptor {
                 label: Some(label),
-                format: Some(DEPTH_FORMAT),
+                format: Some(PEEL_FORMAT),
                 dimension: Some(wgpu::TextureViewDimension::D2),
-                aspect: wgpu::TextureAspect::DepthOnly,
+                aspect: wgpu::TextureAspect::All,
                 base_mip_level: 0,
                 mip_level_count: None,
                 base_array_layer: 0,
@@ -1153,8 +1221,13 @@ impl Renderer {
             .as_ref()
             .expect("targets ensured")
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_copy_view = self
+            .depth_copy_tex
+            .as_ref()
+            .expect("targets ensured")
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // --- Pass 1: opaque meshes (color + normal MRT). ---
+        // --- Pass 1: opaque meshes (color + normal + depth-copy MRT). ---
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("opaque-pass"),
@@ -1182,6 +1255,21 @@ impl Renderer {
                         },
                         depth_slice: None,
                     }),
+                    // W-10: readable depth copy — cleared to 1.0 ("far").
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &depth_copy_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 1.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    }),
                 ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
@@ -1189,10 +1277,7 @@ impl Renderer {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
                     }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    stencil_ops: None, // Depth32Float has no stencil aspect (WebGL2-strict)
                 }),
                 multiview_mask: None,
                 timestamp_writes: None,
@@ -1234,10 +1319,7 @@ impl Renderer {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    stencil_ops: None, // Depth32Float has no stencil aspect (WebGL2-strict)
                 }),
                 multiview_mask: None,
                 timestamp_writes: None,
@@ -1275,8 +1357,9 @@ impl Renderer {
                 .filter(|b| (xray || b.style.transparent || b.style.color[3] < 1.0) && visible(b))
                 .collect();
 
-            let (Some(accum_tex), [Some(peel_a), Some(peel_b)]) = (
+            let (Some(accum_tex), Some(peel_depth), [Some(peel_a), Some(peel_b)]) = (
                 self.accum_tex.as_ref(),
+                self.peel_depth.as_ref(),
                 [&self.peel_tex[0], &self.peel_tex[1]].map(|t| t.as_ref()),
             ) else {
                 // Targets not created (degenerate size): no transparency.
@@ -1288,33 +1371,35 @@ impl Renderer {
             let accum_view = accum_tex.create_view(&wgpu::TextureViewDescriptor::default());
             let peel_view_a = peel_a.create_view(&wgpu::TextureViewDescriptor::default());
             let peel_view_b = peel_b.create_view(&wgpu::TextureViewDescriptor::default());
+            let peel_depth_view = peel_depth.create_view(&wgpu::TextureViewDescriptor::default());
 
-            // Seed: clear the accumulation and the layer-0 depth to 0.0
-            // ("nothing peeled yet" — survivors must be strictly
-            // behind). A depth-only pass, no draws.
+            // Seed: clear the accumulation and the layer-0 bounds to
+            // 0.0 ("nothing peeled yet" — survivors must be strictly
+            // behind). A clear-only pass, no draws.
             {
                 let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("peel-clear"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &accum_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &peel_view_a,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0.0),
-                            store: wgpu::StoreOp::Store,
+                    color_attachments: &[
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: &accum_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
                         }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0),
-                            store: wgpu::StoreOp::Store,
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: &peel_view_a,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
                         }),
-                    }),
+                    ],
+                    depth_stencil_attachment: None,
                     multiview_mask: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
@@ -1327,8 +1412,10 @@ impl Renderer {
                 let layers = options.peel_layers.max(1) as usize;
                 for i in 1..=layers {
                     // Ping-pong: iteration i reads bounds[i-1] (bind
-                    // group), writes bounds[i] (cleared to 1.0 = far;
-                    // the Less depth test min-accumulates survivors).
+                    // group, R32Float color), writes bounds[i] as
+                    // color. The scratch depth attachment (cleared to
+                    // 1.0 = far) carries the Less test that
+                    // min-accumulates survivors into the color target.
                     let (write_view, read_bg, write_bg) = if (i - 1) % 2 == 0 {
                         (
                             &peel_view_b,
@@ -1343,22 +1430,30 @@ impl Renderer {
                         )
                     };
 
-                    // (a) Peel: find the next front layer.
+                    // (a) Peel: find the next front layer. Survivors
+                    // write their NDC z into the R32Float color
+                    // target; the Less-tested scratch depth makes the
+                    // nearest survivor the last writer per pixel.
                     {
                         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("peel-pass"),
-                            color_attachments: &[],
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: write_view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                                depth_slice: None,
+                            })],
                             depth_stencil_attachment: Some(
                                 wgpu::RenderPassDepthStencilAttachment {
-                                    view: write_view,
+                                    view: &peel_depth_view,
                                     depth_ops: Some(wgpu::Operations {
                                         load: wgpu::LoadOp::Clear(1.0),
                                         store: wgpu::StoreOp::Store,
                                     }),
-                                    stencil_ops: Some(wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(0),
-                                        store: wgpu::StoreOp::Store,
-                                    }),
+                                    stencil_ops: None, // Depth32Float has no stencil aspect (WebGL2-strict)
                                 },
                             ),
                             multiview_mask: None,
@@ -1401,10 +1496,7 @@ impl Renderer {
                                         load: wgpu::LoadOp::Load,
                                         store: wgpu::StoreOp::Store,
                                     }),
-                                    stencil_ops: Some(wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(0),
-                                        store: wgpu::StoreOp::Store,
-                                    }),
+                                    stencil_ops: None, // Depth32Float has no stencil aspect (WebGL2-strict)
                                 },
                             ),
                             multiview_mask: None,
@@ -1447,10 +1539,7 @@ impl Renderer {
                                 load: wgpu::LoadOp::Load,
                                 store: wgpu::StoreOp::Store,
                             }),
-                            stencil_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(0),
-                                store: wgpu::StoreOp::Store,
-                            }),
+                            stencil_ops: None, // Depth32Float has no stencil aspect (WebGL2-strict)
                         }),
                         multiview_mask: None,
                         timestamp_writes: None,
@@ -1497,7 +1586,9 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&depth_view),
+                    // W-10: the R32Float depth COPY — textureLoad on a
+                    // real depth texture returns zeros on WebGL2.
+                    resource: wgpu::BindingResource::TextureView(&depth_copy_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,

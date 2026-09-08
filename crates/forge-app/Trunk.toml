@@ -1,0 +1,13 @@
+# Trunk build configuration for the ForgeCAD wasm app (W-10).
+# Run from crates/forge-app: `trunk build [--release]` / `trunk serve`.
+
+[build]
+# Entry HTML; output lands in ./dist (trunk default).
+target = "index.html"
+# NOTE: the environment often sets NO_COLOR=1, which trunk 0.21's CLI
+# parser rejects; run with `NO_COLOR= trunk ...` if that bites.
+
+[[hooks]]
+stage = "post_build"
+command = "echo"
+command_arguments = ["trunk: forge-app wasm bundle ready"]

@@ -2,24 +2,29 @@
 
 use crate::{ExportMesh, IoError, Result};
 use forge_geometry::TriMesh;
-use std::io::Write;
 use std::path::Path;
 
 /// Write meshes to an OBJ file (single object per mesh, "o" records).
 pub fn write_obj(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
-    let mut f = std::fs::File::create(path)?;
-    writeln!(f, "# ForgeCAD OBJ export")?;
+    std::fs::write(path, obj_bytes(meshes))?;
+    Ok(())
+}
+
+/// Serialize meshes as OBJ text into memory (wasm: browser download).
+pub fn obj_bytes(meshes: &[ExportMesh]) -> Vec<u8> {
+    let mut out = String::with_capacity(1024 * 1024);
+    out.push_str("# ForgeCAD OBJ export\n");
     let mut base = 1usize; // OBJ indices are 1-based
     for m in meshes {
         let safe = m.name.replace(char::is_whitespace, "_");
-        writeln!(f, "o {safe}")?;
+        out.push_str(&format!("o {safe}\n"));
         let mesh = &m.mesh;
         for p in &mesh.positions {
-            writeln!(f, "v {:.9} {:.9} {:.9}", p.x, p.y, p.z)?;
+            out.push_str(&format!("v {:.9} {:.9} {:.9}\n", p.x, p.y, p.z));
         }
         if let Some(normals) = &mesh.normals {
             for n in normals {
-                writeln!(f, "vn {:.9} {:.9} {:.9}", n.x, n.y, n.z)?;
+                out.push_str(&format!("vn {:.9} {:.9} {:.9}\n", n.x, n.y, n.z));
             }
         }
         let has_normals = mesh.normals.is_some();
@@ -29,14 +34,14 @@ pub fn write_obj(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
             if has_normals {
                 // Same index for position and normal (they are parallel
                 // arrays in our representation).
-                writeln!(f, "f {a}//{a} {b}//{b} {c}//{c}")?;
+                out.push_str(&format!("f {a}//{a} {b}//{b} {c}//{c}\n"));
             } else {
-                writeln!(f, "f {a} {b} {c}")?;
+                out.push_str(&format!("f {a} {b} {c}\n"));
             }
         }
         base += mesh.positions.len();
     }
-    Ok(())
+    out.into_bytes()
 }
 
 /// Read an OBJ file into a single welded mesh (I-01).
@@ -49,6 +54,12 @@ pub fn write_obj(path: &Path, meshes: &[ExportMesh]) -> Result<()> {
 /// poison the import.
 pub fn read_obj(path: &Path) -> Result<TriMesh> {
     let text = std::fs::read_to_string(path)?;
+    read_obj_bytes(&text)
+}
+
+/// Parse OBJ text from memory (wasm: dropped-file bytes). Pure — no
+/// filesystem access.
+pub fn read_obj_bytes(text: &str) -> Result<TriMesh> {
     let mut mesh = TriMesh::default();
     // Positions are collected raw (per-face duplicates welded later).
     let mut positions: Vec<forge_core::Point3> = Vec::new();

@@ -342,9 +342,9 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
             egui::ComboBox::from_id_salt("section-axis")
                 .selected_text(icons::icon_label(icons::SECTION, ["X", "Y", "Z"][axis]))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut axis, 0, "cut ⟂ X");
-                    ui.selectable_value(&mut axis, 1, "cut ⟂ Y");
-                    ui.selectable_value(&mut axis, 2, "cut ⟂ Z");
+                    ui.selectable_value(&mut axis, 0, "cut normal +X");
+                    ui.selectable_value(&mut axis, 1, "cut normal +Y");
+                    ui.selectable_value(&mut axis, 2, "cut normal +Z");
                 });
             let mut normal = [0.0f64; 3];
             normal[axis] = if section.normal[axis] != 0.0 {

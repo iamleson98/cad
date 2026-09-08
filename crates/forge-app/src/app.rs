@@ -13,9 +13,11 @@ use forge_render::{Camera, RenderOptions, Renderer, Scene, SceneBody};
 use forge_sketch::SolveReport;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
 /// Autosave interval (NFR-RES-03).
+#[cfg(not(target_arch = "wasm32"))]
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(120);
 
 /// One measurement pick (W-08): a surface hit point and its face normal.
@@ -63,7 +65,9 @@ pub struct ForgeApp {
     pub mirror_line_pick: Option<forge_core::EntityId>,
 
     /// Autosave path + timer.
+    #[cfg(not(target_arch = "wasm32"))]
     autosave_path: PathBuf,
+    #[cfg(not(target_arch = "wasm32"))]
     last_autosave: Instant,
 
     /// Document file path (Save).
@@ -105,6 +109,9 @@ pub struct ForgeApp {
     pub status: String,
 
     /// Tokio runtime for background file I/O.
+    /// Async file-I/O runtime for export/import jobs (native only:
+    /// wasm exports synchronously, W-10).
+    #[cfg(not(target_arch = "wasm32"))]
     tokio_rt: tokio::runtime::Runtime,
     /// Export job completion channel.
     export_tx: std::sync::mpsc::Sender<ExportDone>,
@@ -139,38 +146,42 @@ impl ForgeApp {
             )))
         });
 
+        // Autosave destination — native only (wasm has no temp dir).
+        #[cfg(not(target_arch = "wasm32"))]
         let autosave_path = default_autosave_path();
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut doc = Document::new("untitled");
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut status = String::from("Welcome to ForgeCAD — Ctrl+Shift+P for the command palette");
 
         // Crash recovery (NFR-RES-03 + PR-01): restore the freshest of
         // the crash snapshot (refreshed after every mutation) and the
-        // 2-minute autosave.
-        let crash_snapshot = crate::crash::latest_snapshot();
-        let crash_newer = crash_snapshot
-            .as_ref()
-            .and_then(|p| p.metadata().ok().and_then(|m| m.modified().ok()))
-            .zip(
-                autosave_path
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok()),
-            )
-            .map(|(c, a)| c > a)
-            .unwrap_or(false);
-        let recovery_source = if crash_newer {
-            crash_snapshot
-        } else if autosave_path.exists() {
-            Some(autosave_path.clone())
-        } else {
+        // 2-minute autosave. Native only — wasm has no disk to recover
+        // from (browser persistence is a documented TODO).
+        #[cfg(not(target_arch = "wasm32"))]
+        let recovery = (|| -> Option<(PathBuf, &'static str)> {
+            let crash_snapshot = crate::crash::latest_snapshot();
+            let crash_newer = crash_snapshot
+                .as_ref()
+                .and_then(|p| p.metadata().ok().and_then(|m| m.modified().ok()))
+                .zip(
+                    autosave_path
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok()),
+                )
+                .map(|(c, a)| c > a)
+                .unwrap_or(false);
+            if crash_newer {
+                return crash_snapshot.map(|p| (p, "crash snapshot"));
+            }
+            if autosave_path.exists() {
+                return Some((autosave_path.clone(), "autosave"));
+            }
             None
-        };
-        if let Some(path) = recovery_source {
-            let source = if crash_newer {
-                "crash snapshot"
-            } else {
-                "autosave"
-            };
+        })();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((path, source)) = recovery {
             match forge_io::load_document(&path) {
                 Ok(recovered) => {
                     doc = recovered;
@@ -187,6 +198,7 @@ impl ForgeApp {
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         let tokio_rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -209,7 +221,9 @@ impl ForgeApp {
             eval_pending: false,
             eval_requested_this_frame: false,
             last_sketch_report: None,
+            #[cfg(not(target_arch = "wasm32"))]
             autosave_path,
+            #[cfg(not(target_arch = "wasm32"))]
             last_autosave: Instant::now(),
             doc_path: None,
             palette_open: false,
@@ -228,6 +242,7 @@ impl ForgeApp {
             gizmo_press_on_handle: false,
             pick_mode: PickMode::default(),
             status,
+            #[cfg(not(target_arch = "wasm32"))]
             tokio_rt,
             export_tx,
             export_rx,
@@ -343,7 +358,9 @@ impl ForgeApp {
         }
     }
 
-    /// Autosave if needed (NFR-RES-03).
+    /// Autosave if needed (NFR-RES-03). Native only — wasm has no
+    /// writable document path (browser persistence is a TODO item).
+    #[cfg(not(target_arch = "wasm32"))]
     fn maybe_autosave(&mut self) {
         if self.doc.modified && self.last_autosave.elapsed() > AUTOSAVE_INTERVAL {
             match forge_io::save_document(&self.autosave_path, &self.doc) {
@@ -357,25 +374,53 @@ impl ForgeApp {
         }
     }
 
-    /// Save the native document (Ctrl+S / palette).
+    /// Save the native document (Ctrl+S / palette). On wasm this is a
+    /// browser download of the `.forgecad` file (W-10).
     pub fn save_native_dialog(&mut self) {
-        let path = self.doc_path.clone().unwrap_or_else(|| {
-            let mut p = std::env::current_dir().unwrap_or_default();
-            let name = self.doc.name.replace(char::is_whitespace, "_");
-            p.push(format!("{name}.forgecad"));
-            p
-        });
-        match forge_io::save_document(&path, &self.doc) {
-            Ok(()) => {
-                self.doc_path = Some(path.clone());
-                self.doc.modified = false;
-                self.set_status(format!("Saved {}", path.display()));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let name = format!(
+                "{}.forgecad",
+                self.doc.name.replace(char::is_whitespace, "_")
+            );
+            let result = forge_io::document_to_string(&self.doc)
+                .map_err(|e| format!("{e}"))
+                .and_then(|text| {
+                    crate::web::download_bytes(
+                        &name,
+                        text.into_bytes(),
+                        crate::web::mime_for("forgecad"),
+                    )
+                });
+            match result {
+                Ok(()) => {
+                    self.doc.modified = false;
+                    self.set_status(format!("Saved {name} (download)"));
+                }
+                Err(e) => self.set_status(format!("Save failed: {e}")),
             }
-            Err(e) => self.set_status(format!("Save failed: {e}")),
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = self.doc_path.clone().unwrap_or_else(|| {
+                let mut p = std::env::current_dir().unwrap_or_default();
+                let name = self.doc.name.replace(char::is_whitespace, "_");
+                p.push(format!("{name}.forgecad"));
+                p
+            });
+            match forge_io::save_document(&path, &self.doc) {
+                Ok(()) => {
+                    self.doc_path = Some(path.clone());
+                    self.doc.modified = false;
+                    self.set_status(format!("Saved {}", path.display()));
+                }
+                Err(e) => self.set_status(format!("Save failed: {e}")),
+            }
         }
     }
 
-    /// Export meshes in the background (tokio spawn_blocking, FR-IO-*).
+    /// Export meshes (FR-IO-*): tokio background job on native, a
+    /// synchronous browser download on wasm (W-10).
     pub fn export_mesh(&mut self, format: forge_io::ExportFormat) {
         let Some(ev) = &self.last_evaluation else {
             self.set_status("Nothing to export: evaluate a model first");
@@ -393,32 +438,61 @@ impl ForgeApp {
                 mesh: b.mesh.clone(),
             })
             .collect();
-
         let what = format!("{format:?}");
-        let export_tx = self.export_tx.clone();
-        let mut dir = std::env::current_dir().unwrap_or_default();
-        dir.push(format!(
-            "{}.{ext}",
-            self.doc.name.replace(char::is_whitespace, "_"),
-            ext = format.extension()
-        ));
 
-        self.set_status(format!("Exporting {what}…"));
-        self.tokio_rt.spawn_blocking(move || {
-            let path = dir;
-            let result = forge_io::export(format, &path, &meshes);
-            let _ = export_tx.send(ExportDone {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let name = format!(
+                "{}.{ext}",
+                self.doc.name.replace(char::is_whitespace, "_"),
+                ext = format.extension()
+            );
+            let result = forge_io::export_bytes(format, &meshes)
+                .map_err(|e| format!("{e}"))
+                .and_then(|bytes| {
+                    crate::web::download_bytes(
+                        &name,
+                        bytes,
+                        crate::web::mime_for(format.extension()),
+                    )
+                });
+            let _ = self.export_tx.send(ExportDone {
                 what,
-                path: path.clone(),
-                result: result.map_err(|e| format!("{e}")),
+                path: PathBuf::from(&name),
+                result,
             });
-        });
+            // (The native branch below is cfg'd out on wasm — control
+            // simply falls out of the function here.)
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let export_tx = self.export_tx.clone();
+            let mut dir = std::env::current_dir().unwrap_or_default();
+            dir.push(format!(
+                "{}.{ext}",
+                self.doc.name.replace(char::is_whitespace, "_"),
+                ext = format.extension()
+            ));
+
+            self.set_status(format!("Exporting {what}…"));
+            self.tokio_rt.spawn_blocking(move || {
+                let path = dir;
+                let result = forge_io::export(format, &path, &meshes);
+                let _ = export_tx.send(ExportDone {
+                    what,
+                    path: path.clone(),
+                    result: result.map_err(|e| format!("{e}")),
+                });
+            });
+        }
     }
 
     /// Kick off a background mesh import (I-01/I-02): parse + weld +
     /// repair on a blocking thread; the finished meshes arrive via
     /// `import_rx` and are added to the feature tree in
     /// [`Self::poll_imports`].
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn import_file(&mut self, path: PathBuf) {
         let ext = path
             .extension()
@@ -435,6 +509,35 @@ impl ForgeApp {
         self.set_status(format!("Importing {}…", path.display()));
         self.tokio_rt.spawn_blocking(move || {
             let result = forge_io::import_meshes(format, &path).map_err(|e| format!("{e}"));
+            let _ = import_tx.send(ImportDone { path, result });
+        });
+    }
+
+    /// wasm32: import a dropped mesh. Browsers expose file contents
+    /// only through async APIs, so the bytes are awaited off-frame and
+    /// the finished import arrives through `import_rx` (W-10).
+    #[cfg(target_arch = "wasm32")]
+    fn import_dropped(&mut self, handle: egui::DroppedFileHandle, path: PathBuf) {
+        let Some(format) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(forge_io::ImportFormat::from_extension)
+        else {
+            self.set_status(format!(
+                "Unsupported import format: {} (use .stl, .obj or .3mf)",
+                path.display()
+            ));
+            return;
+        };
+        let import_tx = self.import_tx.clone();
+        self.set_status(format!("Importing {}…", path.display()));
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = match handle.bytes_async().await {
+                Ok(bytes) => {
+                    forge_io::import_meshes_bytes(format, &bytes).map_err(|e| format!("{e}"))
+                }
+                Err(e) => Err(e),
+            };
             let _ = import_tx.send(ImportDone { path, result });
         });
     }
@@ -583,6 +686,7 @@ impl ForgeApp {
 }
 
 /// Where the autosave lives.
+#[cfg(not(target_arch = "wasm32"))]
 fn default_autosave_path() -> PathBuf {
     let mut dir = std::env::temp_dir();
     dir.push("forgecad_autosave.forgecad");
@@ -601,7 +705,10 @@ impl eframe::App for ForgeApp {
             }
         }
 
-        // Poll background jobs.
+        // Poll background jobs. On wasm the evaluation worker runs
+        // synchronously here (no threads, W-10).
+        #[cfg(target_arch = "wasm32")]
+        self.eval_worker.process_pending();
         self.poll_evaluation();
         self.poll_pick();
         self.poll_imports();
@@ -611,26 +718,35 @@ impl eframe::App for ForgeApp {
                 Err(e) => self.set_status(format!("Export {what} failed: {e}", what = done.what)),
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
         self.maybe_autosave();
 
         // Drag-and-drop mesh import (I-01): drop .stl/.obj files anywhere
         // on the window to add them as mesh bodies. `raw.dropped_files`
         // persists after the drop, so paths are imported once per session
         // (re-import deliberately via the palette command instead).
-        let dropped: Vec<PathBuf> = ctx
+        // On wasm browsers supply bytes, not local paths — the file-name
+        // path still dedupes, contents are read async (W-10).
+        let dropped: Vec<(PathBuf, egui::DroppedFileHandle)> = ctx
             .input(|i| {
                 i.raw
                     .dropped_files
                     .iter()
-                    .map(|f| f.path().to_path_buf())
-                    .collect::<Vec<PathBuf>>()
+                    .map(|f| (f.path().to_path_buf(), f.clone()))
+                    .collect::<Vec<_>>()
             })
             .into_iter()
-            .filter(|p| !self.imported_paths.contains(p))
+            .filter(|(p, _)| !self.imported_paths.contains(p))
             .collect();
-        for path in dropped {
+        for (path, handle) in dropped {
             self.imported_paths.insert(path.clone());
-            self.import_file(path);
+            #[cfg(target_arch = "wasm32")]
+            self.import_dropped(handle, path);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                drop(handle);
+                self.import_file(path);
+            }
         }
 
         // Global shortcuts.
@@ -745,7 +861,8 @@ impl eframe::App for ForgeApp {
     }
 
     fn on_exit(&mut self) {
-        // Final autosave on exit for crash resilience.
+        // Final autosave on exit for crash resilience (native only).
+        #[cfg(not(target_arch = "wasm32"))]
         if self.doc.modified {
             let _ = forge_io::save_document(&self.autosave_path, &self.doc);
         }

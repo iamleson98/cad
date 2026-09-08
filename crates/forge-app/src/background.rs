@@ -14,7 +14,6 @@ use forge_core::FeatureId;
 use forge_model::{Document, Evaluation, Evaluator};
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender};
-
 /// Request to the evaluation worker.
 pub enum EvalRequest {
     /// Evaluate this document state.
@@ -31,14 +30,29 @@ pub enum EvalResponse {
 pub struct EvalWorker {
     pub tx: Sender<EvalRequest>,
     pub rx: Receiver<EvalResponse>,
+    /// wasm32 (no threads): the worker state lives here and runs
+    /// synchronously in [`EvalWorker::process_pending`] (W-10).
+    #[cfg(target_arch = "wasm32")]
+    sync: SyncWorker,
+}
+
+/// wasm-only worker state (owns the evaluation cache).
+#[cfg(target_arch = "wasm32")]
+struct SyncWorker {
+    rx_req: Receiver<EvalRequest>,
+    tx_res: Sender<EvalResponse>,
+    evaluator: Evaluator,
+    /// Feature data fingerprints of the last evaluated state.
+    last_fingerprint: BTreeMap<FeatureId, String>,
 }
 
 impl EvalWorker {
-    /// Spawn the worker thread.
+    /// Spawn the worker (a thread on native, inline state on wasm).
     pub fn spawn() -> Self {
         let (tx_req, rx_req) = std::sync::mpsc::channel::<EvalRequest>();
         let (tx_res, rx_res) = std::sync::mpsc::channel::<EvalResponse>();
 
+        #[cfg(not(target_arch = "wasm32"))]
         std::thread::Builder::new()
             .name("forge-eval".into())
             .spawn(move || {
@@ -59,7 +73,7 @@ impl EvalWorker {
                                     node.dirty = clean;
                                 }
                             }
-                            let t0 = std::time::Instant::now();
+                            let t0 = forge_core::time::Instant::now();
                             let ev = evaluator.evaluate(&mut doc);
                             let eval_duration = t0.elapsed();
                             let _ = tx_res.send(EvalResponse::Done(ev, eval_duration));
@@ -69,9 +83,43 @@ impl EvalWorker {
             })
             .expect("eval worker thread");
 
+        #[cfg(target_arch = "wasm32")]
+        let sync = SyncWorker {
+            rx_req,
+            tx_res,
+            evaluator: Evaluator::default(),
+            last_fingerprint: BTreeMap::new(),
+        };
+
         Self {
             tx: tx_req,
             rx: rx_res,
+            #[cfg(target_arch = "wasm32")]
+            sync,
+        }
+    }
+
+    /// wasm32 only: run pending requests synchronously on the UI thread.
+    /// Same dirty-set logic as the native thread; called from
+    /// `ForgeApp::ui` before polling `rx`.
+    #[cfg(target_arch = "wasm32")]
+    pub fn process_pending(&mut self) {
+        while let Ok(req) = self.sync.rx_req.try_recv() {
+            match req {
+                EvalRequest::Evaluate(mut doc) => {
+                    let dirty = compute_dirty(&doc, &mut self.sync.last_fingerprint);
+                    for id in doc.tree.order().to_vec() {
+                        let clean = !dirty.contains(&id);
+                        if let Some(node) = doc.tree.get_mut(id) {
+                            node.dirty = clean;
+                        }
+                    }
+                    let t0 = forge_core::time::Instant::now();
+                    let ev = self.sync.evaluator.evaluate(&mut doc);
+                    let eval_duration = t0.elapsed();
+                    let _ = self.sync.tx_res.send(EvalResponse::Done(ev, eval_duration));
+                }
+            }
         }
     }
 }

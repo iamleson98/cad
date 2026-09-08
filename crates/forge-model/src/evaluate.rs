@@ -10,13 +10,13 @@
 
 use crate::document::{DimField, Document};
 use crate::feature::{ExtrudeOp, Feature, HoleKind, PrimitiveKind};
+use forge_core::time::Instant;
 use forge_core::{BodyId, FeatureId, Point2, Point3, TessellationConfig, Transform};
 use forge_geometry::{
     boolean, extrude, loft, primitives, revolve, sweep_along_path, CsgOp, Profile2D, TriMesh,
 };
 use forge_sketch::{Sketch, SketchEntity, SketchPlane, SolveReport};
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Instant;
 
 /// A cached evaluation result for one feature.
 #[derive(Debug, Clone)]

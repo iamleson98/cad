@@ -1,2 +1,4 @@
 target/
 *.forgecad
+crates/forge-app/dist/
+shots/

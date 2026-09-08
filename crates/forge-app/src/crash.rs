@@ -14,14 +14,19 @@
 //!   lock poisoning is recovered, not unwrapped.
 
 use forge_model::Document;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Latest document snapshot (RON), refreshed after every mutation.
+#[cfg(not(target_arch = "wasm32"))]
 static SNAPSHOT: Mutex<Option<String>> = Mutex::new(None);
 
 /// Directory for crash reports and document snapshots.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn crash_dir() -> PathBuf {
     let mut dir = std::env::temp_dir();
     dir.push("forgecad_crash");
@@ -31,6 +36,7 @@ pub fn crash_dir() -> PathBuf {
 /// Refresh the in-memory document snapshot. Cheap: the document is
 /// parametric data only (no meshes); errors are silently ignored — a
 /// missing snapshot degrades the crash report, it never breaks the app.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn snapshot_document(doc: &Document) {
     if let Ok(ron) = ron::ser::to_string_pretty(doc, ron::ser::PrettyConfig::default()) {
         *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(ron);
@@ -38,6 +44,7 @@ pub fn snapshot_document(doc: &Document) {
 }
 
 /// The newest crash document snapshot, if one exists.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn latest_snapshot() -> Option<PathBuf> {
     let dir = std::fs::read_dir(crash_dir()).ok()?;
     let mut best: Option<(SystemTime, PathBuf)> = None;
@@ -60,6 +67,7 @@ pub fn latest_snapshot() -> Option<PathBuf> {
 /// Install the crash-reporting panic hook (call once at startup, before
 /// any window exists). The previous hook is chained afterwards so the
 /// default behavior (message on stderr, unwind/abort) is preserved.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn install_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -69,6 +77,7 @@ pub fn install_hook() {
 }
 
 /// Write the crash report + document snapshot. Best-effort throughout.
+#[cfg(not(target_arch = "wasm32"))]
 fn write_report(info: &std::panic::PanicHookInfo<'_>) {
     let dir = crash_dir();
     if std::fs::create_dir_all(&dir).is_err() {
@@ -122,10 +131,9 @@ fn write_report(info: &std::panic::PanicHookInfo<'_>) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-
     #[test]
     fn snapshot_round_trips_through_migrations() {
         // The crash snapshot must be loadable by the normal loader
@@ -160,4 +168,20 @@ mod tests {
         assert!(dir.starts_with(std::env::temp_dir()));
         assert!(dir.ends_with("forgecad_crash"));
     }
+}
+
+// ---------------------------------------------------------------------------
+// wasm32 stubs (W-10): no disk, no stderr — eframe installs a browser
+// panic handler that reports to the console. The in-memory snapshot /
+// report machinery is native-only.
+// ---------------------------------------------------------------------------
+#[cfg(target_arch = "wasm32")]
+pub fn install_hook() {}
+
+#[cfg(target_arch = "wasm32")]
+pub fn snapshot_document(_doc: &Document) {}
+
+#[cfg(target_arch = "wasm32")]
+pub fn latest_snapshot() -> Option<std::path::PathBuf> {
+    None
 }

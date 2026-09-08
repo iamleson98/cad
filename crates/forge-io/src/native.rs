@@ -11,18 +11,29 @@ use std::path::Path;
 
 /// Save the document as pretty RON.
 pub fn save_document(path: &Path, doc: &Document) -> Result<()> {
-    let data = ron::ser::to_string_pretty(doc, ron::ser::PrettyConfig::default())
-        .map_err(|e| IoError::Serde(format!("ron encode: {e}")))?;
-    std::fs::write(path, data)?;
+    std::fs::write(path, document_to_string(doc)?)?;
     Ok(())
+}
+
+/// Serialize the document (pretty RON) into memory (wasm: browser
+/// download; crash snapshot uses the same string).
+pub fn document_to_string(doc: &Document) -> Result<String> {
+    ron::ser::to_string_pretty(doc, ron::ser::PrettyConfig::default())
+        .map_err(|e| IoError::Serde(format!("ron encode: {e}")))
 }
 
 /// Load a document from RON, validating the format version and migrating
 /// older files to the current schema (I-06).
 pub fn load_document(path: &Path) -> Result<Document> {
     let data = std::fs::read_to_string(path)?;
+    document_from_str(&data)
+}
+
+/// Deserialize + migrate a document from RON text (wasm: dropped-file
+/// bytes as UTF-8). Same validation path as [`load_document`].
+pub fn document_from_str(data: &str) -> Result<Document> {
     let mut doc: Document =
-        ron::from_str(&data).map_err(|e| IoError::Serde(format!("ron decode: {e}")))?;
+        ron::from_str(data).map_err(|e| IoError::Serde(format!("ron decode: {e}")))?;
     if doc.format_version > forge_core::NATIVE_FORMAT_VERSION {
         return Err(IoError::Unsupported(format!(
             "file format version {} is newer than supported {}",
