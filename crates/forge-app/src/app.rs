@@ -416,6 +416,10 @@ impl eframe::App for ForgeApp {
                 ui.heading("Feature tree");
                 ui.separator();
                 ui::tree_panel(ui, self);
+                // P-01: the parameter table shares the left panel.
+                ui.add_space(8.0);
+                ui.separator();
+                ui::params_panel(ui, self);
             });
         egui::Panel::right("inspector")
             .default_size(260.0)

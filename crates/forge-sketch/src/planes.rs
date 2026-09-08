@@ -3,7 +3,7 @@
 //! FR-SK-03: sketches can be defined on the three standard datum planes
 //! or on arbitrary planar faces of existing geometry.
 
-use forge_core::{BodyId, FaceId, Plane, Point3, Vector3};
+use forge_core::{BodyId, FaceId, FeatureId, Plane, Point3, Vector3};
 use serde::{Deserialize, Serialize};
 
 /// The three standard datum planes through the origin.
@@ -53,14 +53,35 @@ pub enum SketchPlane {
         /// The plane itself.
         plane: Plane,
     },
+    /// A reference to a user datum feature (D-01). The plane is resolved
+    /// by the document model at evaluation time (the sketch crate cannot
+    /// see the feature tree); [`SketchPlane::to_plane`] falls back to the
+    /// XY datum for this variant, so **always** resolve through the model.
+    DatumRef {
+        /// The datum feature carrying this sketch.
+        feature: FeatureId,
+    },
 }
 
 impl SketchPlane {
     /// The 3D plane of this sketch plane.
+    ///
+    /// For [`SketchPlane::DatumRef`] this returns the XY datum as a
+    /// fallback — the real plane must be resolved against the feature tree
+    /// by the caller (see `forge_model`'s plane resolution).
     pub fn to_plane(&self) -> Plane {
         match self {
             SketchPlane::Datum { datum } => datum.to_plane(),
             SketchPlane::Face { plane, .. } | SketchPlane::Offset { plane } => *plane,
+            SketchPlane::DatumRef { .. } => DatumPlane::XY.to_plane(),
+        }
+    }
+
+    /// The datum feature this carrier references, if any (D-01).
+    pub fn datum_ref(&self) -> Option<FeatureId> {
+        match self {
+            SketchPlane::DatumRef { feature } => Some(*feature),
+            _ => None,
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Feature definitions: the parametric operations of the tree.
 
-use forge_core::{FeatureId, Point2, Point3, Vector3};
+use forge_core::{FeatureId, Plane, Point2, Point3, Vector3};
 use forge_sketch::Sketch;
 use serde::{Deserialize, Serialize};
 
@@ -178,6 +178,117 @@ pub struct MirrorParams {
     pub target: FeatureId,
 }
 
+/// Hole flavor (F-04), SolidWorks hole-wizard semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HoleKind {
+    /// Straight cylindrical hole.
+    Simple,
+    /// Cylinder + a wider counterbore at the head side.
+    Counterbore,
+    /// Cylinder + a conical countersink at the head side.
+    Countersink,
+}
+
+impl std::fmt::Display for HoleKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            HoleKind::Simple => "Simple",
+            HoleKind::Counterbore => "Counterbore",
+            HoleKind::Countersink => "Countersink",
+        })
+    }
+}
+
+/// Parameters of a hole feature (F-04): a compound boolean-cut stack
+/// (cylinder + counterbore cylinder / countersink cone + optional drill
+/// point) placed at every point/circle-center of the placement sketch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HoleParams {
+    /// Sketch feature providing hole placements (points and circle
+    /// centers; circle diameter is *not* used).
+    pub profile: FeatureId,
+    /// Hole kind.
+    pub kind: HoleKind,
+    /// Hole diameter (mm).
+    pub diameter: f64,
+    /// Hole depth measured from the sketch plane into the material (mm).
+    pub depth: f64,
+    /// Cut side relative to the sketch plane normal (Positive = into
+    /// material on the +normal side, e.g. an XY sketch extruded up).
+    pub direction: forge_geometry::ExtrudeDirection,
+    /// Counterbore diameter (Counterbore only).
+    pub counterbore_diameter: f64,
+    /// Counterbore depth from the sketch plane (Counterbore only).
+    pub counterbore_depth: f64,
+    /// Countersink major diameter (Countersink only).
+    pub countersink_diameter: f64,
+    /// Countersink included angle, radians (Countersink only).
+    pub countersink_angle: f64,
+    /// Add a conical drill point at the hole bottom (118° typical).
+    pub drill_point: bool,
+    /// Drill point included angle, radians.
+    pub drill_angle: f64,
+    /// Target body to cut (holes are always cuts).
+    pub target: FeatureId,
+}
+
+/// Construction of a user datum plane beyond the three standard datums
+/// (D-01).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum DatumParams {
+    /// Plane offset from a standard datum along its normal.
+    Offset {
+        /// Base datum.
+        base: forge_sketch::DatumPlane,
+        /// Offset along the base normal (mm).
+        offset: f64,
+    },
+    /// Plane tilted about a base-plane in-plane axis, through the origin.
+    Angle {
+        /// Base datum.
+        base: forge_sketch::DatumPlane,
+        /// Tilt about the base plane's local X (0) or Y (1) axis.
+        axis: u8,
+        /// Tilt angle (radians).
+        angle: f64,
+    },
+}
+
+impl DatumParams {
+    /// The world-space plane of this datum.
+    pub fn to_plane(&self) -> Plane {
+        match *self {
+            DatumParams::Offset { base, offset } => {
+                let mut plane = base.to_plane();
+                let n: Vector3 = *plane.normal.as_ref();
+                plane.origin += n * offset;
+                plane
+            }
+            DatumParams::Angle { base, axis, angle } => {
+                let plane = base.to_plane();
+                // In-plane axes (u x v = n) from the plane's own frame.
+                let (u, v) = plane.basis();
+                let axis_vec = if axis == 0 { u } else { v };
+                let n: Vector3 = *plane.normal.as_ref();
+                let normal = nalgebra::UnitQuaternion::from_axis_angle(
+                    &nalgebra::Unit::new_unchecked(axis_vec),
+                    angle,
+                ) * n;
+                Plane::new(Point3::origin(), normal).unwrap_or(plane)
+            }
+        }
+    }
+}
+
+impl Default for DatumParams {
+    fn default() -> Self {
+        DatumParams::Offset {
+            base: forge_sketch::DatumPlane::XY,
+            offset: 0.0,
+        }
+    }
+}
+
 /// A node of the parametric feature tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Feature {
@@ -210,6 +321,11 @@ pub enum Feature {
     CircularPattern(CircularPatternParams),
     /// Mirror a body across a plane (F-01).
     Mirror(MirrorParams),
+    /// Compound hole cut at sketch placements (F-04).
+    Hole(HoleParams),
+    /// User datum plane (D-01): construction geometry for sketch carriers
+    /// and mirror/pattern references. Produces no body.
+    Datum(DatumParams),
 }
 
 impl Feature {
@@ -233,13 +349,22 @@ impl Feature {
                 format!("Circular Pattern x{}", p.count.max(1))
             }
             Feature::Mirror(_) => "Mirror".into(),
+            Feature::Hole(h) => format!("{} Hole \u{2300}{:.1}", h.kind, h.diameter),
+            Feature::Datum(d) => match d {
+                DatumParams::Offset { base, offset } => {
+                    format!("Datum: {base:?} +{offset:.1}mm")
+                }
+                DatumParams::Angle { base, angle, .. } => {
+                    format!("Datum: {base:?} tilted {:.0}\u{00b0}", angle.to_degrees())
+                }
+            },
         }
     }
 
     /// Feature ids this feature depends on (its DAG parents).
     pub fn dependencies(&self) -> Vec<FeatureId> {
         match self {
-            Feature::Sketch(_) => Vec::new(),
+            Feature::Sketch(s) => s.plane.datum_ref().into_iter().collect(),
             Feature::Extrude(p) => {
                 let mut d = vec![p.profile];
                 if p.operation != ExtrudeOp::New && !p.target.is_none() {
@@ -280,6 +405,8 @@ impl Feature {
                 }
                 d
             }
+            Feature::Hole(p) => vec![p.profile, p.target],
+            Feature::Datum(_) => Vec::new(),
         }
     }
 }

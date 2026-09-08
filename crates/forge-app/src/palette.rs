@@ -4,8 +4,8 @@ use crate::app::ForgeApp;
 use forge_core::{FeatureId, Point2, Point3, SketchId, Vector3};
 use forge_geometry::ExtrudeDirection;
 use forge_model::{
-    BooleanFeature, CircularPatternParams, Command, ExtrudeOp, ExtrudeParams, Feature,
-    LinearPatternParams, MirrorParams, PrimitiveKind, PrimitiveParams,
+    BooleanFeature, CircularPatternParams, Command, DatumParams, ExtrudeOp, ExtrudeParams, Feature,
+    HoleKind, HoleParams, LinearPatternParams, MirrorParams, PrimitiveKind, PrimitiveParams,
 };
 use forge_render::Scene;
 use forge_sketch::{DatumPlane, Sketch, SketchPlane};
@@ -73,6 +73,31 @@ pub fn entries() -> Vec<PaletteEntry> {
             label: "New Sketch: hexagon on XY",
             keywords: "sketch draw polygon hexagon bolt",
             action: NewSketchHexXY,
+        },
+        PaletteEntry {
+            label: "New datum plane: XY + 20 mm offset",
+            keywords: "datum plane offset reference construction",
+            action: NewDatumOffsetXY,
+        },
+        PaletteEntry {
+            label: "New datum plane: XY tilted 30\u{00b0}",
+            keywords: "datum plane angle tilt reference",
+            action: NewDatumAngleXY,
+        },
+        PaletteEntry {
+            label: "New Sketch: rectangle on latest datum",
+            keywords: "sketch datum carrier rectangle profile",
+            action: NewSketchOnLatestDatum,
+        },
+        PaletteEntry {
+            label: "Hole: drill latest body at latest sketch points",
+            keywords: "hole drill bore counterbore countersink wizard",
+            action: HoleLastBody,
+        },
+        PaletteEntry {
+            label: "Mirror latest body across latest datum",
+            keywords: "mirror reflect datum plane symmetry",
+            action: MirrorLastDatum,
         },
         PaletteEntry {
             label: "Extrude latest sketch (new body)",
@@ -210,6 +235,11 @@ pub enum PaletteAction {
     NewSketchXZ,
     NewSketchSlotXY,
     NewSketchHexXY,
+    NewDatumOffsetXY,
+    NewDatumAngleXY,
+    NewSketchOnLatestDatum,
+    HoleLastBody,
+    MirrorLastDatum,
     ExtrudeLastSketch,
     CutWithCylinder,
     UnionLastTwo,
@@ -272,6 +302,19 @@ impl PaletteAction {
             NewSketchXZ => app.add_sketch_rect(DatumPlane::XZ),
             NewSketchSlotXY => app.add_sketch_slot(DatumPlane::XY),
             NewSketchHexXY => app.add_sketch_polygon(DatumPlane::XY, 6),
+
+            NewDatumOffsetXY => app.add_datum(DatumParams::Offset {
+                base: DatumPlane::XY,
+                offset: 20.0,
+            }),
+            NewDatumAngleXY => app.add_datum(DatumParams::Angle {
+                base: DatumPlane::XY,
+                axis: 0,
+                angle: 30_f64.to_radians(),
+            }),
+            NewSketchOnLatestDatum => app.add_sketch_on_latest_datum(),
+            HoleLastBody => app.hole_last_body(),
+            MirrorLastDatum => app.mirror_last_datum(),
 
             ExtrudeLastSketch => app.extrude_last_sketch(),
             CutWithCylinder => app.cut_with_cylinder(),
@@ -505,6 +548,149 @@ impl ForgeApp {
         match self.doc.add_feature(feature) {
             Ok(_id) => {
                 self.set_status("Mirror added across the YZ plane");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Add a datum plane feature (D-01).
+    pub(crate) fn add_datum(&mut self, params: DatumParams) {
+        let feature = Feature::Datum(params);
+        match self.doc.add_feature(feature.clone()) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(Command::AddFeature { node }, &mut self.doc);
+                }
+                self.set_status("Datum plane added (edit offset/tilt in the inspector)");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// The most recent datum feature id.
+    fn last_datum(&self) -> Option<FeatureId> {
+        self.doc
+            .tree
+            .order()
+            .iter()
+            .rev()
+            .find(|id| matches!(self.doc.feature(**id), Some(Feature::Datum(_))))
+            .copied()
+    }
+
+    /// New sketch carried by the latest datum plane (D-01).
+    pub(crate) fn add_sketch_on_latest_datum(&mut self) {
+        let Some(datum) = self.last_datum() else {
+            self.set_status("No datum plane: create one first (palette: New datum plane)");
+            return;
+        };
+        let sketch_id = SketchId::new(self.doc.allocator.next_id());
+        let mut sketch = Sketch::new(
+            sketch_id,
+            "profile",
+            SketchPlane::DatumRef { feature: datum },
+        );
+        sketch.add_rectangle(Point2::new(-15.0, -10.0), Point2::new(15.0, 10.0));
+        match self.doc.add_feature(Feature::Sketch(sketch.clone())) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(Command::AddFeature { node }, &mut self.doc);
+                }
+                self.set_status("Sketch created on the datum plane");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Hole wizard (F-04): drill the latest body at the points/circles of
+    /// the latest sketch. If that sketch has no points, one is placed at
+    /// the origin.
+    pub(crate) fn hole_last_body(&mut self) {
+        let target = self.last_body_feature();
+        let profile = self
+            .doc
+            .tree
+            .order()
+            .iter()
+            .rev()
+            .find(|id| matches!(self.doc.feature(**id), Some(Feature::Sketch(_))))
+            .copied();
+        let (Some(target), Some(profile)) = (target, profile) else {
+            self.set_status("Holes need a body and a sketch: add a solid and a sketch first");
+            return;
+        };
+        // Ensure the placement sketch has at least one placement point.
+        if let Some(sketch) = self.doc.sketch_mut(profile) {
+            let has_placement = sketch.entities.values().any(|e| {
+                matches!(
+                    e,
+                    forge_sketch::SketchEntity::Point { .. }
+                        | forge_sketch::SketchEntity::Circle { .. }
+                        | forge_sketch::SketchEntity::Arc { .. }
+                )
+            });
+            if !has_placement {
+                sketch.add_point(Point2::origin());
+            }
+        }
+        let feature = Feature::Hole(HoleParams {
+            profile,
+            kind: HoleKind::Simple,
+            diameter: 6.0,
+            depth: 12.0,
+            direction: ExtrudeDirection::Positive,
+            counterbore_diameter: 11.0,
+            counterbore_depth: 4.0,
+            countersink_diameter: 10.0,
+            countersink_angle: 90_f64.to_radians(),
+            drill_point: false,
+            drill_angle: 118_f64.to_radians(),
+            target,
+        });
+        match self.doc.add_feature(feature) {
+            Ok(_id) => {
+                self.set_status("Hole added (edit diameter/depth/type in the inspector)");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// Mirror the latest body across the latest datum plane (D-01).
+    pub(crate) fn mirror_last_datum(&mut self) {
+        let Some(datum) = self.last_datum() else {
+            self.set_status("No datum plane to mirror across: create one first");
+            return;
+        };
+        let Some(source) = self.last_body_feature() else {
+            self.set_status("No body to mirror: add a solid first");
+            return;
+        };
+        let plane = match self.doc.feature(datum) {
+            Some(Feature::Datum(d)) => d.to_plane(),
+            _ => {
+                self.set_status("datum feature is not a plane");
+                return;
+            }
+        };
+        let n: Vector3 = *plane.normal.as_ref();
+        let feature = Feature::Mirror(MirrorParams {
+            source,
+            plane_point: plane.origin,
+            plane_normal: n,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        });
+        match self.doc.add_feature(feature) {
+            Ok(_id) => {
+                self.set_status("Mirror added across the datum plane");
                 self.request_evaluation();
             }
             Err(e) => self.set_status(format!("{e}")),

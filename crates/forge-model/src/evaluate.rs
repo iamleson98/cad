@@ -8,13 +8,13 @@
 //!   from the render set while the boolean succeeds, and reappear when it
 //!   is suppressed or fails.
 
-use crate::document::Document;
-use crate::feature::{ExtrudeOp, Feature, PrimitiveKind};
-use forge_core::{BodyId, FeatureId, Point2, TessellationConfig, Transform};
+use crate::document::{DimField, Document};
+use crate::feature::{ExtrudeOp, Feature, HoleKind, PrimitiveKind};
+use forge_core::{BodyId, FeatureId, Point2, Point3, TessellationConfig, Transform};
 use forge_geometry::{
     boolean, extrude, loft, primitives, revolve, sweep_along_path, CsgOp, Profile2D, TriMesh,
 };
-use forge_sketch::Sketch;
+use forge_sketch::{Sketch, SketchEntity, SketchPlane, SolveReport};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
@@ -55,6 +55,8 @@ pub struct Evaluation {
     pub total_triangles: usize,
     /// Wall-clock duration of the pass.
     pub duration: std::time::Duration,
+    /// Sketch solver reports (S-05 diagnostics: DOF readout, conflicts).
+    pub sketch_reports: BTreeMap<FeatureId, SolveReport>,
 }
 
 impl Evaluation {
@@ -68,6 +70,8 @@ impl Evaluation {
 #[derive(Debug, Clone, Default)]
 pub struct Evaluator {
     cache: BTreeMap<FeatureId, CachedResult>,
+    /// Last solver report per sketch feature (S-05 diagnostics).
+    sketch_reports: BTreeMap<FeatureId, SolveReport>,
     /// Tessellation quality used for all features.
     pub tessellation: TessellationConfig,
 }
@@ -97,6 +101,7 @@ impl Evaluator {
     /// Drop all cached results (e.g. after tessellation settings changed).
     pub fn clear(&mut self) {
         self.cache.clear();
+        self.sketch_reports.clear();
     }
 
     /// Evaluate the document.
@@ -112,12 +117,28 @@ impl Evaluator {
         let mut evaluated = 0usize;
         let mut reused = 0usize;
 
+        // P-01: resolve parameter expressions, then dimension bindings
+        // into numeric overrides, before evaluating any feature.
+        let mut param_error: Option<String> = None;
+        let overrides = match doc.resolve_params().map(|_| doc.resolved_binding_values()) {
+            Ok(Ok(map)) => map,
+            Ok(Err(e)) | Err(e) => {
+                // Parameter failures surface on every bound feature after
+                // the loop (a successful evaluation with last-good stored
+                // values must not clear the message); evaluation continues
+                // with the stored numeric values.
+                param_error = Some(format!("{e}"));
+                BTreeMap::new()
+            }
+        };
+
         for id in doc.tree.order().to_vec() {
             let Some(node) = doc.tree.get(id) else {
                 continue;
             };
             if node.suppressed {
                 self.cache.remove(&id);
+                self.sketch_reports.remove(&id);
                 errors.remove(&id);
                 continue;
             }
@@ -133,8 +154,9 @@ impl Evaluator {
             evaluated += 1;
             // Panic containment (NFR-RES-03).
             let feature = node.feature.clone();
+            let overrides_ref = &overrides;
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.evaluate_feature(&*doc, id, &feature)
+                self.evaluate_feature(&*doc, id, &feature, overrides_ref)
             }));
             let mut success = false;
             match outcome {
@@ -155,6 +177,9 @@ impl Evaluator {
                     if let Feature::Sketch(sketch) = &feature {
                         let mut solved = sketch.clone();
                         let report = solved.solve().ok();
+                        if let Some(r) = &report {
+                            self.sketch_reports.insert(id, r.clone());
+                        }
                         match build_profiles(&solved, &self.tessellation) {
                             Ok(profiles) => {
                                 success = true;
@@ -179,6 +204,14 @@ impl Evaluator {
                                 self.cache.remove(&id);
                             }
                         }
+                    } else if let Feature::Datum(datum) = &feature {
+                        // D-01: datums are construction geometry: no body,
+                        // no profiles; they only act as sketch carriers and
+                        // mirror references. Validation: the plane must be
+                        // constructible.
+                        let _ = datum.to_plane();
+                        errors.remove(&id);
+                        success = true;
                     } else {
                         self.cache.remove(&id);
                         errors.insert(id, "feature produced no result".into());
@@ -220,7 +253,23 @@ impl Evaluator {
             }
         }
 
+        // P-01: attach parameter/binding failures to the bound features
+        // *after* the loop so a successful evaluation (with last-good
+        // stored values) does not clear them.
+        if let Some(e) = &param_error {
+            for b in &doc.bindings {
+                errors
+                    .entry(b.feature)
+                    .and_modify(|old| *old = format!("{old}; {e}"))
+                    .or_insert_with(|| e.clone());
+            }
+        }
+
         let total_triangles = bodies.iter().map(|b| b.mesh.tri_count()).sum();
+        // S-05: reports of living sketch features only.
+        let live: BTreeSet<FeatureId> = doc.tree.order().iter().copied().collect();
+        self.sketch_reports.retain(|id, _| live.contains(id));
+        let sketch_reports = self.sketch_reports.clone();
         Evaluation {
             bodies,
             errors,
@@ -228,25 +277,40 @@ impl Evaluator {
             reused,
             total_triangles,
             duration: start.elapsed(),
+            sketch_reports,
         }
     }
 
-    /// Evaluate one feature. `Ok(None)` means "no body" (sketch features
-    /// are handled by the caller through [`build_profiles`]).
+    /// Evaluate one feature. `Ok(None)` means "no body" (sketch and datum
+    /// features are handled by the caller).
+    ///
+    /// `overrides` carries P-01 dimension-binding values (already resolved
+    /// against the parameter table).
     fn evaluate_feature(
         &mut self,
         doc: &Document,
         id: FeatureId,
         feature: &Feature,
+        overrides: &BTreeMap<(FeatureId, DimField), f64>,
     ) -> crate::Result<Option<CachedResult>> {
-        let _ = id;
+        // P-01: dimension override lookup for this feature.
+        let dim = |field: DimField, stored: f64| -> f64 {
+            overrides
+                .get(&(id, field))
+                .copied()
+                .filter(|v| v.is_finite())
+                .unwrap_or(stored)
+        };
         let mesh: TriMesh = match feature {
-            Feature::Sketch(_) => return Ok(None),
+            Feature::Sketch(_) | Feature::Datum(_) => return Ok(None),
 
             Feature::Primitive(p) => {
                 // Validate dims before touching the kernel (negative or NaN
-                // sizes are user input errors, not kernel panics).
-                let (a, b, c) = (p.dims.x, p.dims.y, p.dims.z);
+                // sizes are user input errors, not kernel panics). The
+                // dimension-A binding (P-01) may override dims.x.
+                let dim_a = dim(DimField::PrimitiveDimA, p.dims.x);
+                let dims = forge_core::Vector3::new(dim_a, p.dims.y, p.dims.z);
+                let (a, b, c) = (dims.x, dims.y, dims.z);
                 let ok = match p.kind {
                     PrimitiveKind::Box => a > 0.0 && b > 0.0 && c > 0.0,
                     PrimitiveKind::Sphere => a > 0.0,
@@ -254,23 +318,19 @@ impl Evaluator {
                     PrimitiveKind::Cone => a >= 0.0 && b >= 0.0 && c > 0.0,
                     PrimitiveKind::Torus => a > 0.0 && b > 0.0,
                 };
-                if !ok || p.dims.x.is_nan() || p.dims.y.is_nan() || p.dims.z.is_nan() {
+                if !ok || dims.x.is_nan() || dims.y.is_nan() || dims.z.is_nan() {
                     return Err(crate::ModelError::Invalid(format!(
-                        "invalid dimensions {:?} for {}",
-                        p.dims, p.kind
+                        "invalid dimensions {dims:?} for {}",
+                        p.kind
                     )));
                 }
                 let cfg = &self.tessellation;
                 match p.kind {
-                    PrimitiveKind::Box => primitives::box_from_center_extents(p.center, p.dims),
-                    PrimitiveKind::Sphere => primitives::sphere(p.center, p.dims.x, cfg),
-                    PrimitiveKind::Cylinder => {
-                        primitives::cylinder(p.center, p.dims.x, p.dims.y, cfg)
-                    }
-                    PrimitiveKind::Cone => {
-                        primitives::cone(p.center, p.dims.x, p.dims.y, p.dims.z, cfg)
-                    }
-                    PrimitiveKind::Torus => primitives::torus(p.center, p.dims.x, p.dims.y, cfg),
+                    PrimitiveKind::Box => primitives::box_from_center_extents(p.center, dims),
+                    PrimitiveKind::Sphere => primitives::sphere(p.center, dims.x, cfg),
+                    PrimitiveKind::Cylinder => primitives::cylinder(p.center, dims.x, dims.y, cfg),
+                    PrimitiveKind::Cone => primitives::cone(p.center, dims.x, dims.y, dims.z, cfg),
+                    PrimitiveKind::Torus => primitives::torus(p.center, dims.x, dims.y, cfg),
                 }
             }
 
@@ -286,17 +346,20 @@ impl Evaluator {
                         "sketch has no closed contours".into(),
                     ));
                 }
-                let plane = doc
-                    .sketch(p.profile)
-                    .map(|s| s.plane.to_plane())
-                    .ok_or_else(|| crate::ModelError::MissingFeature(format!("{}", p.profile)))?;
+                let plane = resolve_plane(doc, p.profile)?;
+                let distance = dim(DimField::ExtrudeDistance, p.distance);
+                if !(distance.is_finite() && distance > 0.0) {
+                    return Err(crate::ModelError::Invalid(format!(
+                        "extrude distance must be positive, got {distance}"
+                    )));
+                }
                 let mut solid = TriMesh::default();
                 for profile in &profiles {
                     let mesh = extrude(
                         profile,
                         &plane,
                         &forge_geometry::ExtrudeParams {
-                            distance: p.distance,
+                            distance,
                             direction: p.direction,
                         },
                     )?;
@@ -315,16 +378,14 @@ impl Evaluator {
                 let profile = profiles
                     .first()
                     .ok_or_else(|| crate::ModelError::Invalid("empty profile".into()))?;
-                let plane = doc
-                    .sketch(p.profile)
-                    .map(|s| s.plane.to_plane())
-                    .ok_or_else(|| crate::ModelError::MissingFeature(format!("{}", p.profile)))?;
+                let plane = resolve_plane(doc, p.profile)?;
+                let angle = dim(DimField::RevolveAngle, p.angle);
                 let solid = revolve(
                     &profile.outer,
                     &plane,
                     p.axis_start,
                     p.axis_end,
-                    &forge_geometry::RevolveParams { angle: p.angle },
+                    &forge_geometry::RevolveParams { angle },
                     &self.tessellation,
                 )?;
                 apply_operation(self, p.operation, p.target, solid)?
@@ -343,10 +404,7 @@ impl Evaluator {
                     let profile = profiles
                         .first()
                         .ok_or_else(|| crate::ModelError::Invalid("empty loft section".into()))?;
-                    let plane = doc
-                        .sketch(*s_id)
-                        .map(|s| s.plane.to_plane())
-                        .ok_or_else(|| crate::ModelError::MissingFeature(format!("{s_id}")))?;
+                    let plane = resolve_plane(doc, *s_id)?;
                     sections.push(profile.clone());
                     planes.push(plane);
                 }
@@ -363,10 +421,7 @@ impl Evaluator {
                 let profile = profiles
                     .first()
                     .ok_or_else(|| crate::ModelError::Invalid("empty profile".into()))?;
-                let plane = doc
-                    .sketch(p.profile)
-                    .map(|s| s.plane.to_plane())
-                    .ok_or_else(|| crate::ModelError::MissingFeature(format!("{}", p.profile)))?;
+                let plane = resolve_plane(doc, p.profile)?;
                 sweep_along_path(&profile.outer, &plane, &p.path)?
             }
 
@@ -410,7 +465,15 @@ impl Evaluator {
                 let seed = self.cached_body(p.source).cloned().ok_or_else(|| {
                     crate::ModelError::MissingEntity(format!("seed {} has no body", p.source))
                 })?;
-                let instances = linear_instance_transforms(p, p.operation != ExtrudeOp::New)?;
+                let spacing = dim(DimField::PatternSpacing, p.spacing);
+                let mut p2 = p.clone();
+                p2.spacing = spacing;
+                if !(spacing.is_finite() && spacing > 0.0) {
+                    return Err(crate::ModelError::Invalid(format!(
+                        "pattern spacing must be positive, got {spacing}"
+                    )));
+                }
+                let instances = linear_instance_transforms(&p2, p.operation != ExtrudeOp::New)?;
                 self.apply_instances(&instances, p.operation, p.target, &seed)?
             }
 
@@ -431,8 +494,36 @@ impl Evaluator {
                         "mirror plane normal is degenerate".into(),
                     ));
                 }
-                let mirrored = source.mirrored(&p.plane_point, &p.plane_normal);
-                apply_operation(self, p.operation, p.target, mirrored)?
+                let mut p2 = p.clone();
+                // P-01: the MirrorOffset binding drives the plane's offset
+                // along its own normal (measured from the origin).
+                if let Some(offset) = overrides.get(&(id, DimField::MirrorOffset)) {
+                    let n = p2.plane_normal.normalize();
+                    p2.plane_point = forge_core::Point3::origin() + n * *offset;
+                }
+                let mirrored = source.mirrored(&p2.plane_point, &p2.plane_normal);
+                apply_operation(self, p2.operation, p2.target, mirrored)?
+            }
+
+            Feature::Hole(p) => {
+                let depth = dim(DimField::HoleDepth, p.depth);
+                let diameter = dim(DimField::HoleDiameter, p.diameter);
+                let mut p2 = p.clone();
+                p2.depth = depth;
+                p2.diameter = diameter;
+                let tool = build_hole_tool(doc, &p2, &self.tessellation)?;
+                if tool.tri_count() == 0 {
+                    return Err(crate::ModelError::Invalid(
+                        "hole tool is empty (check placements and dimensions)".into(),
+                    ));
+                }
+                let target_mesh = self.cached_body(p.target).ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!(
+                        "hole target {} has no body",
+                        p.target
+                    ))
+                })?;
+                boolean(target_mesh, &tool, CsgOp::Difference)?
             }
         };
 
@@ -468,7 +559,8 @@ fn apply_operation(
 /// the consuming feature's result).
 ///
 /// Join/Cut **patterns** also hide their seed: the seed instance is part
-/// of the pattern result (SolidWorks feature-pattern semantics).
+/// of the pattern result (SolidWorks feature-pattern semantics). Holes
+/// consume their cut target (F-04).
 fn consumed_targets(feature: &Feature) -> Vec<FeatureId> {
     fn join_cut_target(op: ExtrudeOp, target: FeatureId) -> Option<FeatureId> {
         (op != ExtrudeOp::New && !target.is_none()).then_some(target)
@@ -496,8 +588,230 @@ fn consumed_targets(feature: &Feature) -> Vec<FeatureId> {
             v
         }
         Feature::Mirror(p) => join_cut_target(p.operation, p.target).into_iter().collect(),
+        Feature::Hole(p) => (!p.target.is_none())
+            .then_some(p.target)
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
+}
+
+/// Resolve a sketch feature's plane, following datum references (D-01).
+fn resolve_plane(doc: &Document, sketch_id: FeatureId) -> crate::Result<forge_core::Plane> {
+    let sketch = doc
+        .sketch(sketch_id)
+        .ok_or_else(|| crate::ModelError::MissingFeature(format!("{sketch_id}")))?;
+    match &sketch.plane {
+        SketchPlane::DatumRef { feature } => {
+            let node = doc.tree.get(*feature).ok_or_else(|| {
+                crate::ModelError::MissingFeature(format!(
+                    "sketch {sketch_id} references missing datum {feature}"
+                ))
+            })?;
+            if node.suppressed {
+                return Err(crate::ModelError::Invalid(format!(
+                    "sketch {sketch_id} lives on suppressed datum {feature}"
+                )));
+            }
+            match &node.feature {
+                Feature::Datum(d) => Ok(d.to_plane()),
+                other => Err(crate::ModelError::Invalid(format!(
+                    "feature {feature} ({}) is not a datum plane",
+                    other.label()
+                ))),
+            }
+        }
+        other => Ok(other.to_plane()),
+    }
+}
+
+/// Rotation mapping unit vector `from` onto `to` (anti-parallel safe).
+fn rotation_from_to(
+    from: forge_core::Vector3,
+    to: forge_core::Vector3,
+) -> nalgebra::UnitQuaternion<f64> {
+    if let Some(q) = nalgebra::UnitQuaternion::rotation_between(&from, &to) {
+        return q;
+    }
+    // Anti-parallel: 180° around any perpendicular axis.
+    let perp = from.cross(&forge_core::Vector3::z());
+    let axis = if perp.norm() < 1e-9 {
+        forge_core::Vector3::x()
+    } else {
+        perp.normalize()
+    };
+    nalgebra::UnitQuaternion::from_axis_angle(
+        &nalgebra::Unit::new_unchecked(axis),
+        std::f64::consts::PI,
+    )
+}
+
+/// Build the revolved cross-section (r, t) of one hole, where `t` measures
+/// distance into the material from the entry plane and `r` the radius.
+/// `lead` extends the tool above the entry plane so the boolean never sees
+/// a coplanar face at the surface.
+fn hole_profile(p: &crate::HoleParams, lead: f64) -> crate::Result<Vec<Point2>> {
+    let d = p.diameter;
+    if !(d.is_finite() && d > 0.0) {
+        return Err(crate::ModelError::Invalid(format!(
+            "hole diameter must be positive, got {d}"
+        )));
+    }
+    if !(p.depth.is_finite() && p.depth > 0.0) {
+        return Err(crate::ModelError::Invalid(format!(
+            "hole depth must be positive, got {}",
+            p.depth
+        )));
+    }
+    let r = d / 2.0;
+    let mut pts: Vec<Point2> = Vec::with_capacity(8);
+    match p.kind {
+        HoleKind::Simple => {
+            // axis start -> (r, -lead) -> (r, depth) -> drill apex
+            pts.push(Point2::new(0.0, -lead));
+            pts.push(Point2::new(r, -lead));
+            pts.push(Point2::new(r, p.depth));
+        }
+        HoleKind::Counterbore => {
+            if p.counterbore_diameter < d {
+                return Err(crate::ModelError::Invalid(format!(
+                    "counterbore diameter {} must be >= hole diameter {d}",
+                    p.counterbore_diameter
+                )));
+            }
+            if !(p.counterbore_depth > 0.0 && p.counterbore_depth < p.depth) {
+                return Err(crate::ModelError::Invalid(format!(
+                    "counterbore depth {} must be in (0, hole depth {})",
+                    p.counterbore_depth, p.depth
+                )));
+            }
+            let cb_r = p.counterbore_diameter / 2.0;
+            pts.push(Point2::new(0.0, -lead));
+            pts.push(Point2::new(cb_r, -lead));
+            pts.push(Point2::new(cb_r, p.counterbore_depth));
+            pts.push(Point2::new(r, p.counterbore_depth));
+            pts.push(Point2::new(r, p.depth));
+        }
+        HoleKind::Countersink => {
+            if p.countersink_diameter < d {
+                return Err(crate::ModelError::Invalid(format!(
+                    "countersink diameter {} must be >= hole diameter {d}",
+                    p.countersink_diameter
+                )));
+            }
+            let half = p.countersink_angle / 2.0;
+            if !(half > 1e-6 && half < std::f64::consts::FRAC_PI_2 - 1e-6) {
+                return Err(crate::ModelError::Invalid(format!(
+                    "countersink angle {:.1}° is out of range",
+                    p.countersink_angle.to_degrees()
+                )));
+            }
+            let cs_r = p.countersink_diameter / 2.0;
+            let cs_h = (cs_r - r) / half.tan();
+            if cs_h >= p.depth {
+                return Err(crate::ModelError::Invalid(
+                    "countersink is deeper than the hole".into(),
+                ));
+            }
+            pts.push(Point2::new(0.0, -lead));
+            pts.push(Point2::new(cs_r, -lead));
+            pts.push(Point2::new(cs_r, 0.0));
+            pts.push(Point2::new(r, cs_h));
+            pts.push(Point2::new(r, p.depth));
+        }
+    }
+    if p.drill_point {
+        let half = p.drill_angle / 2.0;
+        if !(half > 1e-6 && half < std::f64::consts::FRAC_PI_2 - 1e-6) {
+            return Err(crate::ModelError::Invalid(format!(
+                "drill point angle {:.1}° is out of range",
+                p.drill_angle.to_degrees()
+            )));
+        }
+        let dp_h = r / half.tan();
+        // Cone from (r, depth) to the apex (0, depth + dp_h).
+        pts.push(Point2::new(0.0, p.depth + dp_h));
+    } else {
+        // Flat bottom: descend to the axis before closing along it.
+        pts.push(Point2::new(0.0, p.depth));
+    }
+    // Close along the axis back to the start.
+    pts.push(Point2::new(0.0, -lead));
+    Ok(pts)
+}
+
+/// Build the compound hole tool (F-04): one watertight solid of
+/// revolution per placement, oriented along the hole axis (the sketch
+/// plane normal, on the side given by `direction`). Segments of the
+/// counterbore/countersink/drill-point stack are a *single* revolve
+/// profile, so the tool has no internal boolean interfaces.
+fn build_hole_tool(
+    doc: &Document,
+    p: &crate::HoleParams,
+    cfg: &TessellationConfig,
+) -> crate::Result<TriMesh> {
+    let sketch = doc
+        .sketch(p.profile)
+        .ok_or_else(|| crate::ModelError::MissingFeature(format!("{}", p.profile)))?;
+    // Placements: sketch points and circle/arc centers.
+    let placements: Vec<Point2> = sketch
+        .entities
+        .values()
+        .filter_map(|e| match e {
+            SketchEntity::Point { p, .. } => Some(*p),
+            SketchEntity::Circle { center, .. } | SketchEntity::Arc { center, .. } => Some(*center),
+            _ => None,
+        })
+        .collect();
+    if placements.is_empty() {
+        return Err(crate::ModelError::Invalid(
+            "hole sketch has no placement points (add points or circles)".into(),
+        ));
+    }
+    let plane = resolve_plane(doc, p.profile)?;
+    let n: forge_core::Vector3 = *plane.normal.as_ref();
+
+    let signs: Vec<f64> = match p.direction {
+        forge_geometry::ExtrudeDirection::Positive => vec![1.0],
+        forge_geometry::ExtrudeDirection::Negative => vec![-1.0],
+        forge_geometry::ExtrudeDirection::Symmetric => vec![1.0, -1.0],
+    };
+
+    // Overshoot above the entry plane (in air) avoids coplanar boolean
+    // faces at the surface.
+    const LEAD: f64 = 1.0;
+    let profile = hole_profile(p, LEAD)?;
+
+    // Revolve the (r, t) profile around the world +Y axis on an XY-plane
+    // at the origin (to_world maps (r, t) to (r, t, 0); the revolve axis
+    // through 2D (0,0)-(0,1) is the world Y axis), then rigidly move each
+    // tool to its placement and direction.
+    let rev_plane = forge_core::Plane::new(Point3::origin(), forge_core::Vector3::z())
+        .expect("z axis is a valid plane normal");
+    let blank = revolve(
+        &profile,
+        &rev_plane,
+        Point2::new(0.0, 0.0),
+        Point2::new(0.0, 1.0),
+        &forge_geometry::RevolveParams {
+            angle: std::f64::consts::TAU,
+        },
+        cfg,
+    )?;
+
+    let mut tool = TriMesh::default();
+    for placement in &placements {
+        for &sign in &signs {
+            let axis = n * sign;
+            let anchor = plane.to_world(*placement);
+            let rotation = rotation_from_to(forge_core::Vector3::y(), axis);
+            let iso = Transform::from_parts(nalgebra::Translation3::from(anchor.coords), rotation);
+            let mut mesh = blank.transformed(&iso);
+            mesh.compute_vertex_normals();
+            tool.merge(&mesh);
+        }
+    }
+    Ok(tool)
 }
 
 /// Rigid transforms of the pattern copies. For `New` the seed itself is
@@ -716,6 +1030,7 @@ mod tests {
     use super::*;
     use crate::document::Document;
     use crate::feature::{ExtrudeOp, ExtrudeParams, Feature, PrimitiveKind, PrimitiveParams};
+    use crate::{Command, CommandStack, DatumParams, DimField, HoleKind, HoleParams, Param};
     use forge_core::{FeatureId, Point3, SketchId, Vector3};
     use forge_sketch::{DatumPlane, Sketch, SketchPlane};
 
@@ -1211,5 +1526,488 @@ mod tests {
         let result = ev.evaluate(&mut doc);
         assert_eq!(result.bodies.len(), 0);
         assert!(!result.errors.is_empty());
+    }
+
+    // ---- P-01: parameters, expressions, dimension bindings ------------
+
+    #[test]
+    fn parameter_expressions_resolve_in_dependency_order() {
+        let mut doc = Document::new("params");
+        let th = doc.next_param_id();
+        doc.set_param(th, Param::length("th", 5.0));
+        let width = doc.next_param_id();
+        doc.set_param(width, Param::expressed("width", "2*th + 1", false));
+        let depth = doc.next_param_id();
+        doc.set_param(depth, Param::expressed("depth", "width / 2", false));
+        doc.resolve_params().expect("resolve");
+        assert!((doc.params[&width].value - 11.0).abs() < 1e-12);
+        assert!((doc.params[&depth].value - 5.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn parameter_cycle_is_reported() {
+        let mut doc = Document::new("cycle");
+        let a = doc.next_param_id();
+        doc.set_param(a, Param::expressed("a", "b + 1", false));
+        let b = doc.next_param_id();
+        doc.set_param(b, Param::expressed("b", "a + 1", false));
+        let err = doc.resolve_params().expect_err("cycle must fail");
+        let msg = format!("{err}");
+        assert!(msg.contains("cycle"), "message: {msg}");
+    }
+
+    fn add_rect_sketch(doc: &mut Document, plane: SketchPlane, w: f64, h: f64) -> FeatureId {
+        let sid = SketchId::new(doc.allocator.next_id());
+        let mut sketch = Sketch::new(sid, "profile", plane);
+        sketch.add_rectangle(
+            Point2::new(-w / 2.0, -h / 2.0),
+            Point2::new(w / 2.0, h / 2.0),
+        );
+        doc.add_feature(Feature::Sketch(sketch))
+            .expect("add sketch")
+    }
+
+    #[test]
+    fn dimension_binding_drives_extrude_and_re_evaluates() {
+        let mut doc = Document::new("bound");
+        let sketch_id = add_rect_sketch(
+            &mut doc,
+            SketchPlane::Datum {
+                datum: DatumPlane::XY,
+            },
+            10.0,
+            10.0,
+        );
+        let extrude_id = doc
+            .add_feature(Feature::Extrude(ExtrudeParams {
+                profile: sketch_id,
+                distance: 5.0,
+                direction: forge_geometry::ExtrudeDirection::Positive,
+                operation: ExtrudeOp::New,
+                target: FeatureId::NONE,
+            }))
+            .unwrap();
+
+        // Parameter table: h = 12, bound to the extrude distance.
+        let pid = doc.next_param_id();
+        let mut p = Param::length("h", 12.0);
+        p.id = pid;
+        doc.set_param(pid, p.clone());
+        doc.set_binding(extrude_id, DimField::ExtrudeDistance, Some("h".into()));
+        doc.mark_bindings_dirty();
+
+        let mut ev = Evaluator::default();
+        let r1 = ev.evaluate(&mut doc);
+        assert!(r1.errors.is_empty(), "{:?}", r1.errors);
+        let v1 = r1.bodies[0].mesh.volume_signed();
+        assert!((v1 - 10.0 * 10.0 * 12.0).abs() < 1e-6, "volume {v1}");
+
+        // Change the parameter through the undoable command: the bound
+        // feature must re-evaluate (not be reused from cache).
+        let mut p2 = Param::length("h", 20.0);
+        p2.id = pid;
+        let mut commands = CommandStack::new();
+        commands
+            .execute(
+                Command::SetParam {
+                    id: pid,
+                    before: Some(p),
+                    after: Some(p2),
+                },
+                &mut doc,
+            )
+            .expect("set param");
+
+        let r2 = ev.evaluate(&mut doc);
+        let v2 = r2.bodies[0].mesh.volume_signed();
+        assert!((v2 - 10.0 * 10.0 * 20.0).abs() < 1e-6, "volume {v2}");
+        // The volume change proves the extrude re-evaluated (a reused
+        // cache entry would still show 1200).
+        assert!(r2.evaluated >= 1, "extrude re-evaluated: {}", r2.evaluated);
+
+        // Undo restores h = 12.
+        commands.undo(&mut doc).expect("undo");
+        let r3 = ev.evaluate(&mut doc);
+        let v3 = r3.bodies[0].mesh.volume_signed();
+        assert!((v3 - 1200.0).abs() < 1e-6, "volume {v3}");
+    }
+
+    #[test]
+    fn binding_errors_surface_on_the_feature() {
+        let mut doc = Document::new("bad-binding");
+        let sketch_id = add_rect_sketch(
+            &mut doc,
+            SketchPlane::Datum {
+                datum: DatumPlane::XY,
+            },
+            10.0,
+            10.0,
+        );
+        let extrude_id = doc
+            .add_feature(Feature::Extrude(ExtrudeParams {
+                profile: sketch_id,
+                distance: 5.0,
+                direction: forge_geometry::ExtrudeDirection::Positive,
+                operation: ExtrudeOp::New,
+                target: FeatureId::NONE,
+            }))
+            .unwrap();
+        // Binding references a parameter that does not exist.
+        doc.set_binding(
+            extrude_id,
+            DimField::ExtrudeDistance,
+            Some("no_such_param".into()),
+        );
+        doc.mark_bindings_dirty();
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        let msg = result.errors.get(&extrude_id).cloned().unwrap_or_default();
+        assert!(msg.contains("no_such_param"), "error was: {msg}");
+    }
+
+    // ---- D-01: datum planes as sketch carriers -------------------------
+
+    #[test]
+    fn datum_offset_carries_sketch_and_extrude() {
+        let mut doc = Document::new("datum");
+        let datum_id = doc
+            .add_feature(Feature::Datum(DatumParams::Offset {
+                base: DatumPlane::XY,
+                offset: 5.0,
+            }))
+            .unwrap();
+        let sketch_id = add_rect_sketch(
+            &mut doc,
+            SketchPlane::DatumRef { feature: datum_id },
+            10.0,
+            10.0,
+        );
+        doc.add_feature(Feature::Extrude(ExtrudeParams {
+            profile: sketch_id,
+            distance: 5.0,
+            direction: forge_geometry::ExtrudeDirection::Positive,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        }))
+        .unwrap();
+
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        // The datum itself produces no body; the extrusion sits on [5, 10].
+        assert_eq!(result.bodies.len(), 1);
+        let bb = result.bodies[0].mesh.bbox();
+        assert!((bb.min.z - 5.0).abs() < 1e-6, "bbox {bb:?}");
+        assert!((bb.max.z - 10.0).abs() < 1e-6, "bbox {bb:?}");
+        // Evaluation order: datum before sketch (dependency edge).
+        let order: Vec<FeatureId> = result.bodies.iter().map(|b| b.source).collect();
+        assert_eq!(order.len(), 1);
+    }
+
+    #[test]
+    fn editing_datum_re_evaluates_dependent_sketch() {
+        let mut doc = Document::new("datum-edit");
+        let datum_id = doc
+            .add_feature(Feature::Datum(DatumParams::Offset {
+                base: DatumPlane::XY,
+                offset: 5.0,
+            }))
+            .unwrap();
+        let sketch_id = add_rect_sketch(
+            &mut doc,
+            SketchPlane::DatumRef { feature: datum_id },
+            10.0,
+            10.0,
+        );
+        let extrude_id = doc
+            .add_feature(Feature::Extrude(ExtrudeParams {
+                profile: sketch_id,
+                distance: 5.0,
+                direction: forge_geometry::ExtrudeDirection::Positive,
+                operation: ExtrudeOp::New,
+                target: FeatureId::NONE,
+            }))
+            .unwrap();
+
+        let mut ev = Evaluator::default();
+        let r1 = ev.evaluate(&mut doc);
+        assert!(r1.errors.is_empty(), "{:?}", r1.errors);
+        let bb1 = r1.bodies[0].mesh.bbox();
+        assert!((bb1.min.z - 5.0).abs() < 1e-6);
+
+        // Move the datum to z = 10: the extrusion must follow.
+        doc.edit_feature(
+            datum_id,
+            Feature::Datum(DatumParams::Offset {
+                base: DatumPlane::XY,
+                offset: 10.0,
+            }),
+        )
+        .unwrap();
+        let r2 = ev.evaluate(&mut doc);
+        assert!(r2.errors.is_empty(), "{:?}", r2.errors);
+        let bb2 = r2.bodies[0].mesh.bbox();
+        assert!((bb2.min.z - 10.0).abs() < 1e-6, "bbox {bb2:?}");
+        assert!((bb2.max.z - 15.0).abs() < 1e-6, "bbox {bb2:?}");
+        // The dependent chain actually re-evaluated.
+        assert!(r2.evaluated >= 3, "evaluated {}", r2.evaluated);
+        let _ = extrude_id;
+    }
+
+    #[test]
+    fn datum_tilt_keeps_volume_invariant() {
+        let mut doc = Document::new("datum-tilt");
+        let datum_id = doc
+            .add_feature(Feature::Datum(DatumParams::Angle {
+                base: DatumPlane::XY,
+                axis: 0,
+                angle: 30f64.to_radians(),
+            }))
+            .unwrap();
+        let sketch_id = add_rect_sketch(
+            &mut doc,
+            SketchPlane::DatumRef { feature: datum_id },
+            10.0,
+            10.0,
+        );
+        doc.add_feature(Feature::Extrude(ExtrudeParams {
+            profile: sketch_id,
+            distance: 5.0,
+            direction: forge_geometry::ExtrudeDirection::Positive,
+            operation: ExtrudeOp::New,
+            target: FeatureId::NONE,
+        }))
+        .unwrap();
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let v = result.bodies[0].mesh.volume_signed();
+        assert!((v - 500.0).abs() < 1e-6, "tilted extrusion volume {v}");
+    }
+
+    #[test]
+    fn suppressed_datum_reports_clear_error() {
+        let mut doc = Document::new("datum-suppressed");
+        let datum_id = doc
+            .add_feature(Feature::Datum(DatumParams::Offset {
+                base: DatumPlane::XY,
+                offset: 5.0,
+            }))
+            .unwrap();
+        let sketch_id = add_rect_sketch(
+            &mut doc,
+            SketchPlane::DatumRef { feature: datum_id },
+            10.0,
+            10.0,
+        );
+        let extrude_id = doc
+            .add_feature(Feature::Extrude(ExtrudeParams {
+                profile: sketch_id,
+                distance: 5.0,
+                direction: forge_geometry::ExtrudeDirection::Positive,
+                operation: ExtrudeOp::New,
+                target: FeatureId::NONE,
+            }))
+            .unwrap();
+        doc.tree.set_suppressed(datum_id, true).unwrap();
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        let msg = result.errors.get(&extrude_id).cloned().unwrap_or_default();
+        assert!(msg.contains("suppressed datum"), "error was: {msg}");
+    }
+
+    // ---- F-04: hole features -------------------------------------------
+
+    /// Cross-section area of the revolved tool at radius `r`: an n-gon
+    /// with the segment count the tessellator picks for the tool's max
+    /// radius (BSP booleans are volume-exact against this discretization).
+    fn ngon_area(steps: usize, r: f64) -> f64 {
+        0.5 * steps as f64 * r * r * (std::f64::consts::TAU / steps as f64).sin()
+    }
+
+    fn tool_steps(max_r: f64) -> usize {
+        TessellationConfig::default().steps_for_arc(max_r, std::f64::consts::TAU)
+    }
+
+    fn hole_params(profile: FeatureId, target: FeatureId, kind: HoleKind) -> HoleParams {
+        HoleParams {
+            profile,
+            kind,
+            diameter: 6.0,
+            depth: 12.0, // through the 10 mm plate
+            direction: forge_geometry::ExtrudeDirection::Negative,
+            counterbore_diameter: 11.0,
+            counterbore_depth: 4.0,
+            countersink_diameter: 10.0,
+            countersink_angle: 90f64.to_radians(),
+            drill_point: false,
+            drill_angle: 118f64.to_radians(),
+            target,
+        }
+    }
+
+    /// A 30 x 30 x 10 plate with its top face on a datum at z = +5 (D-01
+    /// doubles as the hole entry plane).
+    fn plate_with_top_sketch(doc: &mut Document) -> (FeatureId, FeatureId) {
+        let plate = add_box(
+            doc,
+            "plate",
+            Point3::origin(),
+            Vector3::new(30.0, 30.0, 10.0),
+        );
+        let datum = doc
+            .add_feature(Feature::Datum(DatumParams::Offset {
+                base: DatumPlane::XY,
+                offset: 5.0,
+            }))
+            .unwrap();
+        let sid = SketchId::new(doc.allocator.next_id());
+        let mut sketch = Sketch::new(sid, "holes", SketchPlane::DatumRef { feature: datum });
+        sketch.add_point(Point2::origin());
+        let profile = doc.add_feature(Feature::Sketch(sketch)).unwrap();
+        (plate, profile)
+    }
+
+    #[test]
+    fn simple_hole_volume_exact() {
+        let mut doc = Document::new("hole-simple");
+        let (plate, profile) = plate_with_top_sketch(&mut doc);
+        doc.add_feature(Feature::Hole(hole_params(profile, plate, HoleKind::Simple)))
+            .unwrap();
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.bodies.len(), 1, "plate consumed into the cut result");
+        let v = result.bodies[0].mesh.volume_signed();
+        let n = tool_steps(3.0);
+        let expected = 30.0 * 30.0 * 10.0 - ngon_area(n, 3.0) * 10.0;
+        assert!((v - expected).abs() < 1e-6, "volume {v} vs {expected}");
+    }
+
+    #[test]
+    fn counterbore_hole_volume_exact() {
+        let mut doc = Document::new("hole-cb");
+        let (plate, profile) = plate_with_top_sketch(&mut doc);
+        doc.add_feature(Feature::Hole(hole_params(
+            profile,
+            plate,
+            HoleKind::Counterbore,
+        )))
+        .unwrap();
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let v = result.bodies[0].mesh.volume_signed();
+        // cb: r 5.5 over 4 mm; shaft: r 3 over the remaining 6 mm. The
+        // revolve uses the segment count of the max radius (5.5).
+        let n = tool_steps(5.5);
+        let cut = ngon_area(n, 5.5) * 4.0 + ngon_area(n, 3.0) * 6.0;
+        let expected = 30.0 * 30.0 * 10.0 - cut;
+        assert!((v - expected).abs() < 1e-6, "volume {v} vs {expected}");
+    }
+
+    #[test]
+    fn countersink_hole_volume_exact() {
+        let mut doc = Document::new("hole-cs");
+        let (plate, profile) = plate_with_top_sketch(&mut doc);
+        doc.add_feature(Feature::Hole(hole_params(
+            profile,
+            plate,
+            HoleKind::Countersink,
+        )))
+        .unwrap();
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let v = result.bodies[0].mesh.volume_signed();
+        // 90° included angle: cone height = (5 - 3) / tan(45°) = 2.
+        // Polygonal frustum of similar n-gons: h/3 * (A1 + A2 + sqrt(A1 A2)).
+        let n = tool_steps(5.0);
+        let a_top = ngon_area(n, 5.0);
+        let a_bot = ngon_area(n, 3.0);
+        let frustum = 2.0 / 3.0 * (a_top + a_bot + (a_top * a_bot).sqrt());
+        let shaft = a_bot * 8.0;
+        let expected = 30.0 * 30.0 * 10.0 - frustum - shaft;
+        assert!((v - expected).abs() < 1e-6, "volume {v} vs {expected}");
+    }
+
+    #[test]
+    fn drill_point_adds_cone_volume() {
+        let mut doc = Document::new("hole-drill");
+        let (plate, profile) = plate_with_top_sketch(&mut doc);
+        let mut p = hole_params(profile, plate, HoleKind::Simple);
+        p.depth = 6.0; // blind hole, drill point fully inside the plate
+        p.drill_point = true;
+        doc.add_feature(Feature::Hole(p)).unwrap();
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let v = result.bodies[0].mesh.volume_signed();
+        let dp_h = 3.0 / (59f64.to_radians()).tan();
+        let n = tool_steps(3.0);
+        let a = ngon_area(n, 3.0);
+        let cone = dp_h / 3.0 * a; // similar n-gons tapering to a point
+        let shaft = a * 6.0;
+        let expected = 30.0 * 30.0 * 10.0 - shaft - cone;
+        assert!((v - expected).abs() < 1e-5, "volume {v} vs {expected}");
+    }
+
+    #[test]
+    fn holes_cut_at_every_placement_point() {
+        let mut doc = Document::new("hole-multi");
+        let plate = add_box(
+            &mut doc,
+            "plate",
+            Point3::origin(),
+            Vector3::new(30.0, 30.0, 10.0),
+        );
+        let datum = doc
+            .add_feature(Feature::Datum(DatumParams::Offset {
+                base: DatumPlane::XY,
+                offset: 5.0,
+            }))
+            .unwrap();
+        let sid = SketchId::new(doc.allocator.next_id());
+        let mut sketch = Sketch::new(sid, "holes", SketchPlane::DatumRef { feature: datum });
+        sketch.add_point(Point2::new(-8.0, -8.0));
+        sketch.add_point(Point2::new(8.0, 8.0));
+        // A circle also contributes its center as a placement.
+        sketch.add_circle(Point2::new(8.0, -8.0), 2.0);
+        let profile = doc.add_feature(Feature::Sketch(sketch)).unwrap();
+        doc.add_feature(Feature::Hole(hole_params(profile, plate, HoleKind::Simple)))
+            .unwrap();
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let v = result.bodies[0].mesh.volume_signed();
+        let n = tool_steps(3.0);
+        let expected = 30.0 * 30.0 * 10.0 - 3.0 * ngon_area(n, 3.0) * 10.0;
+        assert!((v - expected).abs() < 1e-6, "volume {v} vs {expected}");
+    }
+
+    // ---- S-05: sketch diagnostics in the evaluation ---------------------
+
+    #[test]
+    fn sketch_reports_are_collected() {
+        let mut doc = Document::new("dof");
+        add_rect_sketch(
+            &mut doc,
+            SketchPlane::Datum {
+                datum: DatumPlane::XY,
+            },
+            10.0,
+            10.0,
+        );
+        let mut ev = Evaluator::default();
+        let result = ev.evaluate(&mut doc);
+        assert_eq!(result.sketch_reports.len(), 1);
+        let (id, report) = result.sketch_reports.iter().next().unwrap();
+        // A rectangle macro: 4 lines x 4 DOF = 16 DOF; 4 coincidences
+        // (2 equations each) + 2 horizontal + 2 vertical = 12 equations
+        // -> 4 DOF remaining (translation + width + height).
+        assert_eq!(report.dof, 16);
+        assert_eq!(report.equations, 12);
+        assert_eq!(report.dof_balance, 4);
+        let _ = id;
     }
 }

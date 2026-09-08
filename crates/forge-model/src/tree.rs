@@ -195,6 +195,17 @@ impl FeatureTree {
         Ok(())
     }
 
+    /// Mark a single feature dirty (descendants follow through the normal
+    /// dirty propagation during the next evaluation). Used by parameter
+    /// edits: bound dimensions change, so the feature must re-evaluate.
+    pub fn mark_dirty(&mut self, id: FeatureId) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.dirty = true;
+            let children: Vec<FeatureId> = node.children.iter().copied().collect();
+            self.mark_descendants_dirty(&children);
+        }
+    }
+
     /// Move a feature within the evaluation order. Constraints: the feature
     /// must stay after its parents and before its children.
     pub fn reorder(&mut self, id: FeatureId, new_index: usize) -> crate::Result<()> {

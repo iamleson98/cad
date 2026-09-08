@@ -149,6 +149,39 @@ pub enum Constraint {
         /// Second circle.
         b: EntityId,
     },
+    /// Two points symmetric about a line: the midpoint of the two points
+    /// lies on the line and the segment joining them is perpendicular to
+    /// the line (2 scalar equations, S-04).
+    Symmetric {
+        /// First entity.
+        a: EntityId,
+        /// Point on the first entity.
+        a_point: PointRole,
+        /// Second entity.
+        b: EntityId,
+        /// Point on the second entity.
+        b_point: PointRole,
+        /// Symmetry line.
+        line: EntityId,
+    },
+    /// A point pinned to the midpoint of a line (2 equations, S-04).
+    MidpointOn {
+        /// Entity carrying the point.
+        a: EntityId,
+        /// Point on the entity.
+        a_point: PointRole,
+        /// The line whose midpoint the point sits on.
+        line: EntityId,
+    },
+    /// A point constrained to lie on a circle or arc (1 equation, S-04).
+    PointOnCircle {
+        /// Entity carrying the point.
+        a: EntityId,
+        /// Point on the entity.
+        a_point: PointRole,
+        /// The circle/arc the point lies on.
+        circle: EntityId,
+    },
 }
 
 impl Constraint {
@@ -157,7 +190,9 @@ impl Constraint {
         match self {
             Constraint::Coincident { .. }
             | Constraint::Concentric { .. }
-            | Constraint::FixPoint { .. } => 2,
+            | Constraint::FixPoint { .. }
+            | Constraint::Symmetric { .. }
+            | Constraint::MidpointOn { .. } => 2,
             _ => 1,
         }
     }
@@ -180,6 +215,9 @@ impl Constraint {
             Constraint::FixPoint { .. } => "Fixed".into(),
             Constraint::EqualLength { .. } => "Equal length".into(),
             Constraint::EqualRadius { .. } => "Equal radius".into(),
+            Constraint::Symmetric { .. } => "Symmetric".into(),
+            Constraint::MidpointOn { .. } => "Midpoint on line".into(),
+            Constraint::PointOnCircle { .. } => "Point on circle".into(),
         }
     }
 
@@ -201,6 +239,9 @@ impl Constraint {
             TangentLineCircle { line, circle, .. } => vec![*line, *circle],
             Radius { circle, .. } => vec![*circle],
             FixPoint { entity, .. } => vec![*entity],
+            Symmetric { a, b, line, .. } => vec![*a, *b, *line],
+            MidpointOn { a, line, .. } => vec![*a, *line],
+            PointOnCircle { a, circle, .. } => vec![*a, *circle],
         }
     }
 }

@@ -517,6 +517,124 @@ fn build_equation(sys: &System, c: &Constraint) -> Option<Eq> {
                 }
             }
         }
+        Constraint::PointOnCircle { a, a_point, circle } => {
+            // |P - C| = r (works for circles and arcs; both pack the
+            // radius at parameter index 2).
+            let (pa, ja) = sys.point(*a, *a_point)?;
+            let (cx, cy, cr) = sys.circle(*circle)?;
+            let dx = pa.x - cx;
+            let dy = pa.y - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < 1e-12 {
+                return None;
+            }
+            r[0] = dist - cr;
+            let (oa, da) = sys.param_span(*a)?;
+            for (k, blk) in ja.iter().enumerate() {
+                if k < da {
+                    j[(0, oa + k)] += (dx / dist) * blk[0] + (dy / dist) * blk[1];
+                }
+            }
+            let (oc, dof) = sys.param_span(*circle)?;
+            if dof >= 3 {
+                j[(0, oc)] -= dx / dist;
+                j[(0, oc + 1)] -= dy / dist;
+                let rr = sys.radius_row(*circle);
+                for (k, dv) in rr.iter().enumerate() {
+                    if k < dof {
+                        j[(0, oc + k)] -= dv;
+                    }
+                }
+            }
+        }
+        Constraint::Symmetric {
+            a,
+            a_point,
+            b,
+            b_point,
+            line,
+        } => {
+            // Two scalar equations: (1) the midpoint of A,B lies on the
+            // line: cross(d, M - L0) = 0; (2) segment AB perpendicular to
+            // the line: dot(d, B - A) = 0.
+            let (pa, ja) = sys.point(*a, *a_point)?;
+            let (pb, jb) = sys.point(*b, *b_point)?;
+            let (d, jd) = sys.line_dir(*line)?;
+            let (p0, j0) = sys.point(*line, PointRole::Start)?;
+            let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
+            if len < 1e-12 {
+                return None;
+            }
+            let mx = 0.5 * (pa.x + pb.x);
+            let my = 0.5 * (pa.y + pb.y);
+            let ux = mx - p0.x;
+            let uy = my - p0.y;
+            r[0] = d[0] * uy - d[1] * ux;
+            let sx = pb.x - pa.x;
+            let sy = pb.y - pa.y;
+            r[1] = d[0] * sx + d[1] * sy;
+
+            let (oa, da) = sys.param_span(*a)?;
+            for (k, blk) in ja.iter().enumerate() {
+                if k < da {
+                    // eq1: midpoint on line -> 0.5 * per-point weights
+                    j[(0, oa + k)] += 0.5 * (-d[1] * blk[0] + d[0] * blk[1]);
+                    // eq2: dot(d, B - A) -> -d per component
+                    j[(1, oa + k)] -= d[0] * blk[0] + d[1] * blk[1];
+                }
+            }
+            let (ob, db) = sys.param_span(*b)?;
+            for (k, blk) in jb.iter().enumerate() {
+                if k < db {
+                    j[(0, ob + k)] += 0.5 * (-d[1] * blk[0] + d[0] * blk[1]);
+                    j[(1, ob + k)] += d[0] * blk[0] + d[1] * blk[1];
+                }
+            }
+            let (ol, dofl) = sys.param_span(*line)?;
+            for (k, blk) in jd.iter().enumerate() {
+                if k < dofl {
+                    // eq1 line-param derivative: dEq1 = d(dx)*uy - d(dy)*ux
+                    // + dy*d(u.x) - dx*d(u.y), with u = M - p0.
+                    j[(0, ol + k)] += blk[0] * uy - blk[1] * ux;
+                    // eq2 line-param derivative: dEq2 = d(dx)*sx + d(dy)*sy.
+                    j[(1, ol + k)] += blk[0] * sx + blk[1] * sy;
+                }
+            }
+            for (k, blk) in j0.iter().enumerate() {
+                if k < dofl {
+                    // u = M - p0 moves opposite to the line start point.
+                    j[(0, ol + k)] += d[1] * blk[0] - d[0] * blk[1];
+                }
+            }
+        }
+        Constraint::MidpointOn { a, a_point, line } => {
+            // P = (L0 + L1) / 2.
+            let (pa, ja) = sys.point(*a, *a_point)?;
+            let (p0, j0) = sys.point(*line, PointRole::Start)?;
+            let (p1, j1) = sys.point(*line, PointRole::End)?;
+            r[0] = pa.x - 0.5 * (p0.x + p1.x);
+            r[1] = pa.y - 0.5 * (p0.y + p1.y);
+            let (oa, da) = sys.param_span(*a)?;
+            for (k, blk) in ja.iter().enumerate() {
+                if k < da {
+                    j[(0, oa + k)] += blk[0];
+                    j[(1, oa + k)] += blk[1];
+                }
+            }
+            let (ol, dofl) = sys.param_span(*line)?;
+            for (k, blk) in j0.iter().enumerate() {
+                if k < dofl {
+                    j[(0, ol + k)] -= 0.5 * blk[0];
+                    j[(1, ol + k)] -= 0.5 * blk[1];
+                }
+            }
+            for (k, blk) in j1.iter().enumerate() {
+                if k < dofl {
+                    j[(0, ol + k)] -= 0.5 * blk[0];
+                    j[(1, ol + k)] -= 0.5 * blk[1];
+                }
+            }
+        }
     }
     Some(Eq { r, j })
 }

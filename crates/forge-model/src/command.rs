@@ -61,6 +61,17 @@ pub enum Command {
         /// Value after (None = removed).
         after: Option<crate::document::Param>,
     },
+    /// Dimension binding set/changed/removed (P-01).
+    SetBinding {
+        /// The feature whose dimension is driven.
+        feature: FeatureId,
+        /// Which dimension.
+        field: crate::document::DimField,
+        /// Expression before (None = was not bound).
+        before: Option<String>,
+        /// Expression after (None = unbind).
+        after: Option<String>,
+    },
 }
 
 impl Command {
@@ -78,6 +89,9 @@ impl Command {
                 Some(p) => format!("Set parameter {}", p.name),
                 None => "Remove parameter".into(),
             },
+            Command::SetBinding { feature, field, .. } => {
+                format!("Bind {field} of feature {feature}")
+            }
         }
     }
 
@@ -111,18 +125,30 @@ impl Command {
                 doc.modified = true;
                 Ok(())
             }
-            Command::SetParam { id, after, .. } => match after {
-                Some(p) => {
-                    doc.params.insert(*id, p.clone());
-                    doc.modified = true;
-                    Ok(())
+            Command::SetParam { id, after, .. } => {
+                match after {
+                    Some(p) => {
+                        doc.params.insert(*id, p.clone());
+                    }
+                    None => {
+                        doc.params.remove(id);
+                    }
                 }
-                None => {
-                    doc.params.remove(id);
-                    doc.modified = true;
-                    Ok(())
-                }
-            },
+                // P-01: parameter values may feed any bound dimension.
+                doc.mark_bindings_dirty();
+                doc.modified = true;
+                Ok(())
+            }
+            Command::SetBinding {
+                feature,
+                field,
+                after,
+                ..
+            } => {
+                doc.set_binding(*feature, *field, after.clone());
+                doc.tree.mark_dirty(*feature);
+                Ok(())
+            }
         }
     }
 
@@ -154,18 +180,29 @@ impl Command {
                 doc.modified = true;
                 Ok(())
             }
-            Command::SetParam { id, before, .. } => match before {
-                Some(p) => {
-                    doc.params.insert(*id, p.clone());
-                    doc.modified = true;
-                    Ok(())
+            Command::SetParam { id, before, .. } => {
+                match before {
+                    Some(p) => {
+                        doc.params.insert(*id, p.clone());
+                    }
+                    None => {
+                        doc.params.remove(id);
+                    }
                 }
-                None => {
-                    doc.params.remove(id);
-                    doc.modified = true;
-                    Ok(())
-                }
-            },
+                doc.mark_bindings_dirty();
+                doc.modified = true;
+                Ok(())
+            }
+            Command::SetBinding {
+                feature,
+                field,
+                before,
+                ..
+            } => {
+                doc.set_binding(*feature, *field, before.clone());
+                doc.tree.mark_dirty(*feature);
+                Ok(())
+            }
         }
     }
 }

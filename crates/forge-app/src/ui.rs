@@ -2,7 +2,7 @@
 
 use crate::app::ForgeApp;
 use crate::palette::{entries, fuzzy_score, PaletteAction};
-use forge_model::{Command, Feature};
+use forge_model::{Command, DimField, Feature};
 
 /// Top toolbar.
 pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
@@ -180,9 +180,32 @@ pub fn tree_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 Feature::LinearPattern(_) => "⋮",
                 Feature::CircularPattern(_) => "◍",
                 Feature::Mirror(_) => "⇄",
+                Feature::Hole(_) => "⌾",
+                Feature::Datum(_) => "▱",
+            };
+
+            // S-05: sketch diagnostics badge (DOF / over-constrained).
+            let dof_badge: Option<String> = match &node.feature {
+                Feature::Sketch(_) => app
+                    .last_evaluation
+                    .as_ref()
+                    .and_then(|ev| ev.sketch_reports.get(&id))
+                    .map(|r| {
+                        if r.dof_balance > 0 {
+                            format!("{} DOF", r.dof_balance)
+                        } else if r.dof_balance < 0 {
+                            format!("over-constrained {}", -r.dof_balance)
+                        } else {
+                            "fully constrained".to_string()
+                        }
+                    }),
+                _ => None,
             };
 
             let mut title = format!("{icon} {label}");
+            if let Some(badge) = &dof_badge {
+                title = format!("{title} — {badge}");
+            }
             if node.suppressed {
                 title = format!("∅ {title}");
             }
@@ -285,6 +308,52 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
             app.request_evaluation();
         }
     }
+
+    /// Text field binding a feature dimension to an expression (P-01).
+    /// The stored numeric value stays the fallback; the binding (when the
+    /// expression parses) drives the dimension instead.
+    fn dim_binding_field(
+        ui: &mut egui::Ui,
+        app: &mut ForgeApp,
+        id: forge_core::FeatureId,
+        field: DimField,
+        stored: f64,
+    ) {
+        let current = app
+            .doc
+            .binding(id, field)
+            .map(|b| b.expression.clone())
+            .unwrap_or_default();
+        let bound = !current.is_empty();
+        ui.label(format!(
+            "{} = {:.2}{}",
+            field,
+            stored,
+            if bound { "  [bound]" } else { "" }
+        ));
+        let mut expr = current.clone();
+        let response = ui.text_edit_singleline(&mut expr);
+        response.on_hover_text("Expression (e.g. `2*th + 1`); empty = numeric value");
+        if ui.button("Bind").clicked() {
+            let before = app.doc.binding(id, field).map(|b| b.expression.clone());
+            let after = if expr.trim().is_empty() {
+                None
+            } else {
+                Some(expr.trim().to_string())
+            };
+            let _ = app.commands.execute(
+                Command::SetBinding {
+                    feature: id,
+                    field,
+                    before,
+                    after,
+                },
+                &mut app.doc,
+            );
+            app.request_evaluation();
+        }
+    }
+
     let edit =
         |app: &mut ForgeApp, new_feature: Feature| edit_feature(app, id, &feature, new_feature);
 
@@ -337,13 +406,9 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
             ui.separator();
             ui.label(format!("Operation: {}", p.operation));
             ui.label(format!("Direction: {:?}", p.direction));
-            ui.label(
-                egui::RichText::new(
-                    "The profile sketch is referenced by the tree.\n3D drag manipulators are a Phase-2 roadmap item.",
-                )
-                .small()
-                .weak(),
-            );
+            // P-01: bind the distance to a parameter expression.
+            ui.separator();
+            dim_binding_field(ui, app, id, DimField::ExtrudeDistance, p.distance);
         }
         Feature::Revolve(p) => {
             let mut angle = p.angle.to_degrees();
@@ -354,12 +419,30 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 newp.angle = new_angle;
                 edit(app, Feature::Revolve(newp));
             }
+            dim_binding_field(ui, app, id, DimField::RevolveAngle, p.angle);
         }
         Feature::Sketch(sketch) => {
             ui.label(format!("Plane: {:?}", sketch.plane));
             ui.label(format!("Entities: {}", sketch.entities.len()));
             ui.label(format!("Constraints: {}", sketch.constraints.len()));
-            if let Some(report) = &app.last_sketch_report {
+            // S-05: live diagnostics from the background evaluation.
+            if let Some(report) = app
+                .last_evaluation
+                .as_ref()
+                .and_then(|ev| ev.sketch_reports.get(&id))
+            {
+                let dof = if report.dof_balance > 0 {
+                    format!("{} DOF remaining", report.dof_balance)
+                } else if report.dof_balance < 0 {
+                    format!("over-constrained by {}", -report.dof_balance)
+                } else {
+                    "fully constrained".to_string()
+                };
+                ui.label(format!(
+                    "Solver: {} ({dof}, residual {:.2e}, {} iters)",
+                    report.status, report.residual, report.iterations
+                ));
+            } else if let Some(report) = &app.last_sketch_report {
                 ui.label(format!(
                     "Solver: {} (residual {:.2e}, {} iters)",
                     report.status, report.residual, report.iterations
@@ -483,10 +566,168 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 newp.plane_point.x = plane_x;
                 edit(app, Feature::Mirror(newp));
             }
+            dim_binding_field(ui, app, id, DimField::MirrorOffset, p.plane_point.x);
+        }
+        Feature::Hole(p) => {
+            // F-04: hole wizard parameters.
+            let mut newp = p.clone();
+            let kinds = [
+                forge_model::HoleKind::Simple,
+                forge_model::HoleKind::Counterbore,
+                forge_model::HoleKind::Countersink,
+            ];
+            let selected = kinds.iter().position(|k| *k == p.kind).unwrap_or(0);
+            let mut picked = selected;
+            egui::ComboBox::from_id_salt("hole-kind")
+                .selected_text(format!("{}", p.kind))
+                .show_ui(ui, |ui| {
+                    for (i, k) in kinds.iter().enumerate() {
+                        ui.selectable_value(&mut picked, i, format!("{k}"));
+                    }
+                });
+            newp.kind = kinds[picked];
+            egui::Grid::new("hole-params")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    ui.label("Diameter");
+                    ui.add(
+                        egui::DragValue::new(&mut newp.diameter)
+                            .speed(0.1)
+                            .range(0.1..=200.0)
+                            .suffix(" mm"),
+                    );
+                    ui.end_row();
+                    ui.label("Depth");
+                    ui.add(
+                        egui::DragValue::new(&mut newp.depth)
+                            .speed(0.5)
+                            .range(0.1..=500.0)
+                            .suffix(" mm"),
+                    );
+                    ui.end_row();
+                    if newp.kind == forge_model::HoleKind::Counterbore {
+                        ui.label("Counterbore \u{2300}");
+                        ui.add(
+                            egui::DragValue::new(&mut newp.counterbore_diameter)
+                                .speed(0.1)
+                                .range(0.1..=300.0)
+                                .suffix(" mm"),
+                        );
+                        ui.end_row();
+                        ui.label("Counterbore depth");
+                        ui.add(
+                            egui::DragValue::new(&mut newp.counterbore_depth)
+                                .speed(0.1)
+                                .range(0.1..=100.0)
+                                .suffix(" mm"),
+                        );
+                        ui.end_row();
+                    }
+                    if newp.kind == forge_model::HoleKind::Countersink {
+                        ui.label("Countersink \u{2300}");
+                        ui.add(
+                            egui::DragValue::new(&mut newp.countersink_diameter)
+                                .speed(0.1)
+                                .range(0.1..=300.0)
+                                .suffix(" mm"),
+                        );
+                        ui.end_row();
+                        ui.label("Countersink angle");
+                        let mut cs = newp.countersink_angle.to_degrees();
+                        ui.add(
+                            egui::DragValue::new(&mut cs)
+                                .speed(1.0)
+                                .range(10.0..=170.0)
+                                .suffix("\u{00b0}"),
+                        );
+                        newp.countersink_angle = cs.to_radians();
+                        ui.end_row();
+                    }
+                    ui.end_row();
+                });
+            ui.checkbox(&mut newp.drill_point, "Drill point (conical bottom)");
+            if newp.drill_point {
+                let mut dp = newp.drill_angle.to_degrees();
+                ui.add(egui::Slider::new(&mut dp, 60.0..=180.0).text("drill angle"));
+                newp.drill_angle = dp.to_radians();
+            }
+            let mut dir = match newp.direction {
+                forge_geometry::ExtrudeDirection::Positive => 0usize,
+                forge_geometry::ExtrudeDirection::Negative => 1usize,
+                forge_geometry::ExtrudeDirection::Symmetric => 2usize,
+            };
+            egui::ComboBox::from_id_salt("hole-dir")
+                .selected_text(["Positive", "Negative", "Both"].dir_label(dir))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut dir, 0, "Positive (along normal)");
+                    ui.selectable_value(&mut dir, 1, "Negative (against normal)");
+                    ui.selectable_value(&mut dir, 2, "Both directions");
+                });
+            newp.direction = match dir {
+                0 => forge_geometry::ExtrudeDirection::Positive,
+                1 => forge_geometry::ExtrudeDirection::Negative,
+                _ => forge_geometry::ExtrudeDirection::Symmetric,
+            };
+            if newp != *p {
+                edit(app, Feature::Hole(newp));
+            }
+            ui.separator();
+            dim_binding_field(ui, app, id, DimField::HoleDiameter, p.diameter);
+            dim_binding_field(ui, app, id, DimField::HoleDepth, p.depth);
+        }
+        Feature::Datum(d) => {
+            // D-01: datum plane parameters.
+            let mut newd = *d;
+            match d {
+                forge_model::DatumParams::Offset { base, offset } => {
+                    ui.label(format!("Offset plane from {base:?}"));
+                    let mut off = *offset;
+                    ui.add(egui::Slider::new(&mut off, -200.0..=200.0).text("offset (mm)"));
+                    if let forge_model::DatumParams::Offset { offset, .. } = &mut newd {
+                        *offset = off;
+                    }
+                }
+                forge_model::DatumParams::Angle { base, axis, angle } => {
+                    ui.label(format!("Tilted plane from {base:?}"));
+                    let mut a = angle.to_degrees();
+                    let mut ax = *axis;
+                    ui.add(egui::Slider::new(&mut a, -89.0..=89.0).text("tilt (deg)"));
+                    egui::ComboBox::from_id_salt("datum-axis")
+                        .selected_text(if ax == 0 { "about X" } else { "about Y" })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut ax, 0, "about local X");
+                            ui.selectable_value(&mut ax, 1, "about local Y");
+                        });
+                    if let forge_model::DatumParams::Angle { axis, angle, .. } = &mut newd {
+                        *axis = ax;
+                        *angle = a.to_radians();
+                    }
+                }
+            }
+            if newd != *d {
+                edit(app, Feature::Datum(newd));
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Datums are construction geometry: create sketches on them\n(palette: New Sketch on latest datum).",
+                )
+                .small()
+                .weak(),
+            );
         }
         _ => {
             ui.label("No parameters for this feature yet.");
         }
+    }
+}
+
+/// Label helper for the hole direction combo.
+trait DirLabel {
+    fn dir_label(&self, i: usize) -> String;
+}
+impl DirLabel for [&str; 3] {
+    fn dir_label(&self, i: usize) -> String {
+        self[i.min(2)].to_string()
     }
 }
 
@@ -507,7 +748,34 @@ pub fn status_bar(ui: &mut egui::Ui, app: &ForgeApp) {
             "{eval_state}  |  bodies: {bodies}  |  tris: {tris}"
         ));
         ui.separator();
+        // S-05: live sketch diagnostics for the selected sketch.
+        if let Some(sketch_id) = app.selection.primary_feature() {
+            if let Some(report) = app
+                .last_evaluation
+                .as_ref()
+                .and_then(|ev| ev.sketch_reports.get(&sketch_id))
+            {
+                let text = if report.dof_balance > 0 {
+                    format!("sketch: {} DOF", report.dof_balance)
+                } else if report.dof_balance < 0 {
+                    format!("sketch: over-constrained by {}", -report.dof_balance)
+                } else {
+                    "sketch: fully constrained".to_string()
+                };
+                let color = if report.dof_balance < 0 {
+                    egui::Color32::from_rgb(220, 120, 100)
+                } else {
+                    egui::Color32::from_rgb(140, 200, 140)
+                };
+                ui.label(egui::RichText::new(text).color(color));
+                ui.separator();
+            }
+        }
         ui.label(format!("features: {}", app.doc.tree.len()));
+        if !app.doc.params.is_empty() {
+            ui.separator();
+            ui.label(format!("params: {}", app.doc.params.len()));
+        }
         ui.separator();
         if app.commands.can_undo() {
             ui.label(format!("undo depth: {}", app.commands.undo_depth()));
@@ -518,6 +786,141 @@ pub fn status_bar(ui: &mut egui::Ui, app: &ForgeApp) {
             ui.label(egui::RichText::new(&app.status).weak());
         });
     });
+}
+
+/// P-01: the user parameter table (name, expression or value, unit) with
+/// undoable edits and per-row deletion. Angle parameters display degrees
+/// (stored as radians).
+pub fn params_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
+    ui.heading("Parameters");
+    ui.separator();
+    if app.doc.params.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "No parameters.\nAdd one and bind dimensions to it,\ne.g. `width = 2*th + 1`.",
+            )
+            .small()
+            .weak(),
+        );
+    }
+    let ids: Vec<forge_core::ParamId> = app.doc.params.keys().copied().collect();
+    for pid in ids {
+        let Some(param) = app.doc.params.get(&pid).cloned() else {
+            continue;
+        };
+        let mut name = param.name.clone();
+        let mut expr = param.expression.clone().unwrap_or_default();
+        // Value edits happen in display units (degrees for angles).
+        let mut display_value = if param.is_angle {
+            param.value.to_degrees()
+        } else {
+            param.value
+        };
+        let mut apply_clicked = false;
+        let mut delete_clicked = false;
+        egui::Grid::new(format!("param-{pid:?}"))
+            .num_columns(3)
+            .show(ui, |ui| {
+                ui.text_edit_singleline(&mut name);
+                if param.expression.is_some() {
+                    // Expression-driven: the value is computed, not edited.
+                    ui.text_edit_singleline(&mut expr);
+                    ui.label(format!(
+                        "= {:.4}{}",
+                        display_value,
+                        if param.is_angle { "\u{00b0}" } else { "mm" }
+                    ));
+                } else {
+                    // Plain value: expr field empty = value edit.
+                    ui.text_edit_singleline(&mut expr);
+                    ui.add(
+                        egui::DragValue::new(&mut display_value)
+                            .speed(0.1)
+                            .suffix(if param.is_angle { "\u{00b0}" } else { "mm" }),
+                    );
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        apply_clicked = true;
+                    }
+                    if ui.button("\u{2715}").clicked() {
+                        delete_clicked = true;
+                    }
+                });
+                ui.end_row();
+            });
+        if delete_clicked {
+            let _ = app.commands.execute(
+                Command::SetParam {
+                    id: pid,
+                    before: Some(param.clone()),
+                    after: None,
+                },
+                &mut app.doc,
+            );
+            app.request_evaluation();
+            continue;
+        }
+        if apply_clicked {
+            let expr_trim = expr.trim();
+            let mut new_param = param.clone();
+            new_param.name = name.trim().to_string();
+            if expr_trim.is_empty() {
+                new_param.expression = None;
+                new_param.value = if param.is_angle {
+                    display_value.to_radians()
+                } else {
+                    display_value
+                };
+                let _ = app.commands.execute(
+                    Command::SetParam {
+                        id: pid,
+                        before: Some(param.clone()),
+                        after: Some(new_param),
+                    },
+                    &mut app.doc,
+                );
+                app.request_evaluation();
+            } else {
+                // Validate the expression before recording the command.
+                match forge_model::expr::validate(expr_trim) {
+                    Err(e) => app.set_status(format!("expression: {}", e.message)),
+                    Ok(_) => {
+                        new_param.expression = Some(expr_trim.to_string());
+                        let _ = app.commands.execute(
+                            Command::SetParam {
+                                id: pid,
+                                before: Some(param.clone()),
+                                after: Some(new_param),
+                            },
+                            &mut app.doc,
+                        );
+                        // Re-resolve immediately so the table shows the
+                        // computed value (the worker re-resolves too).
+                        if let Err(e) = app.doc.resolve_params() {
+                            app.set_status(format!("{e}"));
+                        }
+                        app.request_evaluation();
+                    }
+                }
+            }
+        }
+        ui.add_space(2.0);
+    }
+    if ui.button("\u{ff0b} Add parameter").clicked() {
+        let pid = app.doc.next_param_id();
+        let mut p = forge_model::Param::length("new_param", 10.0);
+        p.id = pid;
+        let _ = app.commands.execute(
+            Command::SetParam {
+                id: pid,
+                before: None,
+                after: Some(p),
+            },
+            &mut app.doc,
+        );
+        app.request_evaluation();
+    }
 }
 
 /// The command palette overlay (FR-UI-01).

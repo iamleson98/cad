@@ -851,4 +851,200 @@ mod tests {
             assert_abs_diff_eq!(end.y, 8.660254037844, epsilon = 1e-6);
         }
     }
+
+    /// S-04: two points symmetric about a line: midpoint on the line and
+    /// the segment perpendicular to it.
+    #[test]
+    fn symmetric_constraint_solves() {
+        let mut s = Sketch::new(SketchId::new(1), "sym", plane());
+        // Symmetry axis: the x-axis through the origin.
+        let axis = s.add_line(Point2::new(-10.0, 0.0), Point2::new(10.0, 0.0));
+        let p = s.add_point(Point2::new(3.0, 7.0));
+        let q = s.add_point(Point2::new(-4.0, -5.0)); // perturbed mirror
+        s.add_constraint(Constraint::Symmetric {
+            a: p,
+            a_point: PointRole::Start,
+            b: q,
+            b_point: PointRole::Start,
+            line: axis,
+        });
+        // Pin the axis and the first point; the second must mirror.
+        s.add_constraint(Constraint::FixPoint {
+            entity: axis,
+            point: PointRole::Start,
+            position: (-10.0, 0.0),
+        });
+        s.add_constraint(Constraint::FixPoint {
+            entity: axis,
+            point: PointRole::End,
+            position: (10.0, 0.0),
+        });
+        s.add_constraint(Constraint::FixPoint {
+            entity: p,
+            point: PointRole::Start,
+            position: (3.0, 7.0),
+        });
+        let report = s.solve().expect("solve");
+        assert!(
+            report.is_solved(),
+            "status {:?} residual {}",
+            report.status,
+            report.residual
+        );
+        let pq = s
+            .entities
+            .get(&q)
+            .unwrap()
+            .point(&PointRole::Start)
+            .unwrap();
+        assert_abs_diff_eq!(pq.x, 3.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(pq.y, -7.0, epsilon = 1e-6);
+    }
+
+    /// S-04: symmetric constraint about a slanted, free-to-move line (the
+    /// line's own parameters participate in the Jacobian).
+    #[test]
+    fn symmetric_slanted_axis_solves() {
+        let mut s = Sketch::new(SketchId::new(1), "sym2", plane());
+        let axis = s.add_line(Point2::new(-6.0, -2.0), Point2::new(8.0, 5.0));
+        let p = s.add_point(Point2::new(1.0, 9.0));
+        let q = s.add_point(Point2::new(-2.0, -3.0));
+        s.add_constraint(Constraint::Symmetric {
+            a: p,
+            a_point: PointRole::Start,
+            b: q,
+            b_point: PointRole::Start,
+            line: axis,
+        });
+        s.add_constraint(Constraint::FixPoint {
+            entity: p,
+            point: PointRole::Start,
+            position: (1.0, 9.0),
+        });
+        s.add_constraint(Constraint::FixPoint {
+            entity: q,
+            point: PointRole::Start,
+            position: (3.0, -4.0),
+        });
+        let report = s.solve().expect("solve");
+        assert!(
+            report.is_solved(),
+            "status {:?} residual {}",
+            report.status,
+            report.residual
+        );
+        // Verify the geometric property directly: midpoint on the line,
+        // pq perpendicular to the line.
+        let (l0, l1) = match s.entities.get(&axis) {
+            Some(SketchEntity::Line { start, end, .. }) => (*start, *end),
+            _ => panic!("axis missing"),
+        };
+        let pp = s
+            .entities
+            .get(&p)
+            .unwrap()
+            .point(&PointRole::Start)
+            .unwrap();
+        let pq = s
+            .entities
+            .get(&q)
+            .unwrap()
+            .point(&PointRole::Start)
+            .unwrap();
+        let d = l1 - l0;
+        let mid = (pp.coords + pq.coords) * 0.5;
+        let u = mid - l0.coords;
+        let cross = d.x * u.y - d.y * u.x;
+        let dot = d.x * (pq.x - pp.x) + d.y * (pq.y - pp.y);
+        assert_abs_diff_eq!(cross, 0.0, epsilon = 1e-7);
+        assert_abs_diff_eq!(dot, 0.0, epsilon = 1e-7);
+    }
+
+    /// S-04: a point pinned to a line's midpoint.
+    #[test]
+    fn midpoint_constraint_solves() {
+        let mut s = Sketch::new(SketchId::new(1), "mid", plane());
+        let line = s.add_line(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+        let p = s.add_point(Point2::new(9.0, 2.0)); // perturbed
+        s.add_constraint(Constraint::MidpointOn {
+            a: p,
+            a_point: PointRole::Start,
+            line,
+        });
+        s.add_constraint(Constraint::FixPoint {
+            entity: line,
+            point: PointRole::Start,
+            position: (0.0, 0.0),
+        });
+        s.add_constraint(Constraint::FixPoint {
+            entity: line,
+            point: PointRole::End,
+            position: (10.0, 0.0),
+        });
+        let report = s.solve().expect("solve");
+        assert!(
+            report.is_solved(),
+            "status {:?} residual {}",
+            report.status,
+            report.residual
+        );
+        let pp = s
+            .entities
+            .get(&p)
+            .unwrap()
+            .point(&PointRole::Start)
+            .unwrap();
+        assert_abs_diff_eq!(pp.x, 5.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(pp.y, 0.0, epsilon = 1e-6);
+    }
+
+    /// S-04: a point constrained onto a circle's circumference; the circle
+    /// is anchored, so the point must travel onto the rim.
+    #[test]
+    fn point_on_circle_solves() {
+        let mut s = Sketch::new(SketchId::new(1), "poc", plane());
+        let circle = s.add_circle(Point2::new(0.0, 0.0), 6.0);
+        let p = s.add_point(Point2::new(8.0, 3.0));
+        s.add_constraint(Constraint::PointOnCircle {
+            a: p,
+            a_point: PointRole::Start,
+            circle,
+        });
+        s.add_constraint(Constraint::FixPoint {
+            entity: circle,
+            point: PointRole::Center,
+            position: (0.0, 0.0),
+        });
+        s.add_constraint(Constraint::Radius { circle, value: 6.0 });
+        // Lock the point's angle-ish direction: keep it in the first
+        // quadrant via a distance constraint to another fixed point.
+        let anchor = s.add_point(Point2::new(12.0, 0.0));
+        s.add_constraint(Constraint::FixPoint {
+            entity: anchor,
+            point: PointRole::Start,
+            position: (12.0, 0.0),
+        });
+        s.add_constraint(Constraint::Distance {
+            a: p,
+            a_point: PointRole::Start,
+            b: anchor,
+            b_point: PointRole::Start,
+            value: 6.6,
+        });
+        let report = s.solve().expect("solve");
+        assert!(
+            report.is_solved(),
+            "status {:?} residual {}",
+            report.status,
+            report.residual
+        );
+        let pp = s
+            .entities
+            .get(&p)
+            .unwrap()
+            .point(&PointRole::Start)
+            .unwrap();
+        assert_abs_diff_eq!(pp.coords.norm(), 6.0, epsilon = 1e-6);
+        assert_abs_diff_eq!((pp - Point2::new(12.0, 0.0)).norm(), 6.6, epsilon = 1e-6);
+    }
 }

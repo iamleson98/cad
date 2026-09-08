@@ -56,13 +56,24 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       Center-ellipse with semi-axes + tilt: solver DOFs `[cx, cy, rx, ry,
       θ]`, ellipse-arc variant, contour sampling, point-on-ellipse
       constraint. Requires solver packing extension.
-- [ ] **S-04 Remaining sketch constraints** `(S)` `P1`
+- [x] **S-04 Remaining sketch constraints** `(S)` `P1`
       Symmetric (about line/point), midpoint-on, point-on-curve (arc/
       spline/ellipse), equal-radius already ok → add "equal length"
       pairwise, tangent-arc-arc at point.
-- [ ] **S-05 Sketch diagnostics UI** `(S)` `P1`
+      *Done: `Symmetric` (midpoint-on-line + perpendicular, 2 eq),
+      `MidpointOn`, `PointOnCircle` (circles and arcs), all with analytic
+      Jacobians + convergence tests. Remaining sub-items: symmetric about
+      a **point**, point-on-spline, tangent-arc-arc at a shared point —
+      folded into S-03's solver-packing extension.*
+- [x] **S-05 Sketch diagnostics UI** `(S)` `P1`
       Live DOF readout ("3 DOF remaining"), over-constrained /
       conflicting-constraint highlighting in tree + viewport badges.
+      *Done: `Evaluation::sketch_reports` carries per-sketch solve
+      reports (DOF, equations, residual); the feature tree shows a
+      "N DOF / over-constrained / fully constrained" badge, the status
+      bar shows live DOF of the selected sketch, the inspector shows the
+      full solver report. Viewport badges land with W-04 (face/edge
+      selection overlay).*
 - [ ] **S-06 Offset entities** `(M)` `P2`
       Offset a contour chain by distance (creates new constrained
       geometry, handles chain-corner intersections).
@@ -70,10 +81,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       Trim-to-intersection on line/arc chains; extend to head.
 - [ ] **S-08 Sketch mirror tool** `(S)` `P2`
       Mirror selected entities about a line, creating symmetric constraints.
-- [ ] **F-04 Hole feature (compound)** `(M)` `P1`
+- [x] **F-04 Hole feature (compound)** `(M)` `P1`
       Standard holes: simple / counterbore / countersink, diameter, depth,
       drill-point angle, placed at sketch points; evaluated as boolean cut
       stack on cylinders/cones.
+      *Done: `Feature::Hole` builds each hole as a **single solid of
+      revolution** (cylinder + counterbore/countersink frustum + drill
+      point from one revolve profile — no internal boolean interfaces),
+      rigidly oriented along the sketch plane normal (Positive/Negative/
+      Both), 1 mm entry overshoot avoids coplanar-face degeneracy.
+      Volume-exact tests incl. counterbore/countersink/drill point and
+      multi-placement; hole consumes its target; inspector hole wizard;
+      palette command.*
 - [ ] **F-05 Shell / hollow** `(L)` `P2` — needs face-level selection (see
       W-04) or a B-Rep kernel; documented in `forge-geometry/src/detail.rs`.
 - [ ] **F-06 Draft / taper on extrude** `(M)` `P2`
@@ -81,13 +100,29 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       scaled). Reuses loft path.
 - [ ] **F-07 Thin-wall / rib extrude mode** `(M)` `P2`
       Offset open profiles by thickness and cap ends (sheet-metal basics).
-- [ ] **P-01 User parameter table + expressions** `(M)` `P1`
+- [x] **P-01 User parameter table + expressions** `(M)` `P1`
       Named parameters (mm/deg), expression evaluator (`width = 2*th + 1`),
       dimensions reference parameters; UI table; document serialization.
       Foundation for all later parametric depth.
-- [ ] **D-01 Datum planes & axes beyond the three datums** `(S)` `P1`
+      *Done: recursive-descent expression evaluator (precedence, `^`,
+      functions, `deg()`; cycles and domain errors reported by name);
+      `Param::expression` + `Document::resolve_params` (fixpoint
+      dependency order); `DimBinding` side-table drives extrude distance,
+      revolve angle, hole diameter/depth, pattern spacing, mirror offset,
+      primitive dim A; undoable `SetParam`/`SetBinding` commands with
+      dirty-marking so cached features re-evaluate; parameters panel in
+      the left panel; binding fields in the inspector; RON roundtrip
+      (serde defaults keep old files loadable).*
+- [x] **D-01 Datum planes & axes beyond the three datums** `(S)` `P1`
       Offset-from-face, at-angle, through-edge/through-two-points planes;
       selectable as sketch carriers and mirror/pattern references.
+      *Done: `Feature::Datum` (Offset and Angle kinds) as first-class
+      construction features; `SketchPlane::DatumRef` resolves through the
+      tree at evaluation time (suppressed/missing datum → clear feature
+      error); datum edits dirty dependent sketches; palette commands for
+      datum creation, sketch-on-datum, mirror-across-datum. Remaining
+      sub-items: through-edge / through-two-points / offset-from-face
+      datums need W-04 face-edge selection.*
 
 ## Wave 3 — Viewport interaction & rendering parity
 
