@@ -155,10 +155,28 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 - [ ] **W-03 Depth-peeled transparency** `(M)` `P1`
       Dual depth peeling (8–16 layers) replacing sorted blending; correct
       interpenetrating transparent geometry (documented in render TODO).
-- [ ] **W-04 Face/edge/vertex selection model** `(M)` `P1`
+- [x] **W-04 Face/edge/vertex selection model** `(M)` `P1`
       Picking granularity beyond bodies: ray→BVH→triangle → face cluster
       (coplanar/normal-threshold flood), edge chains (sharp edge sets),
       vertex snap. Prerequisite for fillet/chamfer/shell/draft UI.
+      *Done: `TriMesh::face_cluster` (BFS flood vs the seed normal, 1°
+      tol — flat patches; curved faces select as narrow bands until the
+      B-Rep kernel lands), `cluster_boundary_edges`, and
+      `sharp_edge_chains` (sharp edges grouped by *collinear
+      continuation* through shared vertices — |dot| tangency: a cube
+      yields 12 single-edge chains, a cylinder rim one closed loop; the
+      fillet-run grouping). App side: `picking.rs` — a Bodies/Faces/
+      Edges/Vertices granularity combo in the toolbar + 4 palette
+      commands; sub-picks raycast via the shared per-body BVH
+      (`raycast_bodies`, refactored out of the measure tool). Ids are
+      canonical and deterministic (face = cluster's min triangle index,
+      edge chain = min vertex index, vertex = position index).
+      Highlights: translucent face fill + boundary outline, chain
+      polylines, vertex dots (egui overlay). `New sketch on selected
+      face` creates a `SketchPlane::Face` sketch (centroid + outward
+      normal, rectangle sized to 40% of the cluster bbox) — extrude/cut
+      directly on faces. Deferred: fillet/chamfer/shell UI (K-03/F-05),
+      cap-plane section rendering, edge/edge + face/face measure modes.*
 - [x] **W-05 Display modes** `(S)` `P2`
       Wireframe / hidden-line (depth-precision lines) / shaded / shaded+
       edges / x-ray (opacity slider) / section — viewport toolbar presets.

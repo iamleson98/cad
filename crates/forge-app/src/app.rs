@@ -3,6 +3,7 @@
 use crate::background::{EvalRequest, EvalResponse, EvalWorker, ExportDone, ImportDone};
 use crate::gizmo::{GizmoDrag, GizmoHandle, GizmoMode};
 use crate::palette::PaletteAction;
+use crate::picking::PickMode;
 use crate::ui;
 use crate::viewport;
 use forge_core::{BodyId, FeatureId, Point3};
@@ -89,6 +90,9 @@ pub struct ForgeApp {
     /// The primary button is (or was, until this frame's click check) held
     /// on a gizmo handle: pick-clicks are suppressed (W-01).
     pub(crate) gizmo_press_on_handle: bool,
+
+    /// Picking granularity (W-04): bodies / faces / edges / vertices.
+    pub pick_mode: PickMode,
 
     /// Status line text.
     pub status: String,
@@ -181,6 +185,7 @@ impl ForgeApp {
             gizmo_drag: None,
             gizmo_hover: None,
             gizmo_press_on_handle: false,
+            pick_mode: PickMode::default(),
             status,
             tokio_rt,
             export_tx,
@@ -449,17 +454,15 @@ impl ForgeApp {
         self.measure_bvhs_stale = false;
     }
 
-    /// A viewport click in measure mode: raycast every body, record the
-    /// surface hit (point + face normal). Empty space restarts the pick.
-    pub fn measure_click(&mut self, ndc: (f64, f64), aspect: f64) {
+    /// Raycast every visible body (W-04 / W-08): nearest hit as
+    /// `(body index, ray distance t, triangle index)`.
+    pub fn raycast_bodies(&mut self, ndc: (f64, f64), aspect: f64) -> Option<(usize, f64, usize)> {
         if self.measure_bvhs_stale {
             self.rebuild_measure_bvhs();
         }
-        let ray = self.camera.ray_through_ndc(ndc, aspect);
-        let Some(ray) = ray else { return };
+        let ray = self.camera.ray_through_ndc(ndc, aspect)?;
         let far = self.camera.far;
-
-        let mut best: Option<(usize, f64, usize)> = None; // (body, t, triangle)
+        let mut best: Option<(usize, f64, usize)> = None;
         if let Some(ev) = &self.last_evaluation {
             for (i, (body, (_, bvh))) in ev.bodies.iter().zip(self.measure_bvhs.iter()).enumerate()
             {
@@ -471,6 +474,13 @@ impl ForgeApp {
                 }
             }
         }
+        best
+    }
+
+    /// A viewport click in measure mode: raycast every body, record the
+    /// surface hit (point + face normal). Empty space restarts the pick.
+    pub fn measure_click(&mut self, ndc: (f64, f64), aspect: f64) {
+        let best = self.raycast_bodies(ndc, aspect);
 
         let Some((body_idx, t, tri)) = best else {
             // Clicked empty space: restart the measurement.
@@ -480,6 +490,8 @@ impl ForgeApp {
             return;
         };
 
+        let ray = self.camera.ray_through_ndc(ndc, aspect);
+        let Some(ray) = ray else { return };
         let point = ray.at(t);
         let normal = self
             .last_evaluation

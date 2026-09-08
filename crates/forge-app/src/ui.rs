@@ -183,6 +183,34 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
         {
             PaletteAction::GizmoRotate.run(app);
         }
+
+        // Selection granularity (W-04): bodies / faces / edges / vertices.
+        let mut mode = app.pick_mode;
+        egui::ComboBox::from_id_salt("pick-mode")
+            .selected_text(format!("Select: {}", mode.label()))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut mode, crate::picking::PickMode::Bodies, "Bodies");
+                ui.selectable_value(&mut mode, crate::picking::PickMode::Faces, "Faces");
+                ui.selectable_value(
+                    &mut mode,
+                    crate::picking::PickMode::Edges,
+                    "Edges (sharp chains)",
+                );
+                ui.selectable_value(&mut mode, crate::picking::PickMode::Vertices, "Vertices");
+            });
+        if mode != app.pick_mode {
+            app.pick_mode = mode;
+            app.selection.clear();
+            app.set_status(format!("Picking {}", mode.label().to_lowercase()));
+        }
+        if app.pick_mode == crate::picking::PickMode::Faces
+            && ui
+                .button("Sketch on face")
+                .on_hover_text("Create a sketch on the selected planar face (W-04)")
+                .clicked()
+        {
+            PaletteAction::SketchOnSelectedFace.run(app);
+        }
         if let Some(section) = &mut app.render_options.section {
             let mut axis = if section.normal[0] != 0.0 {
                 0

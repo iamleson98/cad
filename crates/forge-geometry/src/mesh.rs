@@ -308,17 +308,10 @@ impl TriMesh {
     /// line rendering.
     pub fn sharp_edges(&self, angle_tol: f64) -> Vec<[u32; 2]> {
         // Map undirected edge -> the two adjacent triangles (face normals).
-        let mut edge_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
-        for t in 0..self.tri_count() {
-            let [a, b, c] = self.triangle_idx(t);
-            let key = |x: u32, y: u32| (x.min(y), x.max(y));
-            edge_faces.entry(key(a, b)).or_default().push(t);
-            edge_faces.entry(key(b, c)).or_default().push(t);
-            edge_faces.entry(key(c, a)).or_default().push(t);
-        }
+        let edge_tris = self.edge_triangle_map();
 
-        let mut out = Vec::with_capacity(edge_faces.len());
-        for ((a, b), tris) in edge_faces {
+        let mut out = Vec::with_capacity(edge_tris.len());
+        for ((a, b), tris) in edge_tris {
             let include = match tris.as_slice() {
                 [_] => true, // boundary edge
                 [t0, t1] => {
@@ -334,6 +327,136 @@ impl TriMesh {
         }
         out.sort();
         out
+    }
+
+    /// Map undirected edge -> adjacent triangle indices (shared by the
+    /// edge-query methods).
+    fn edge_triangle_map(&self) -> HashMap<(u32, u32), Vec<usize>> {
+        let mut edge_tris: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for t in 0..self.tri_count() {
+            let [a, b, c] = self.triangle_idx(t);
+            let key = |x: u32, y: u32| (x.min(y), x.max(y));
+            edge_tris.entry(key(a, b)).or_default().push(t);
+            edge_tris.entry(key(b, c)).or_default().push(t);
+            edge_tris.entry(key(c, a)).or_default().push(t);
+        }
+        edge_tris
+    }
+
+    /// Coplanar face cluster (W-04): flood-fill from `seed` across shared
+    /// edges while the neighbor normal stays within `normal_tol` of the
+    /// *seed* normal (flat-patch semantics: the whole cluster is coplanar
+    /// with the seed triangle). Sorted, deterministic.
+    pub fn face_cluster(&self, seed: usize, normal_tol: f64) -> Vec<usize> {
+        if seed >= self.tri_count() {
+            return Vec::new();
+        }
+        let edge_tris = self.edge_triangle_map();
+        let cos_tol = normal_tol.cos();
+        let seed_normal = self.triangle_normal(seed).unwrap_or(Vector3::z());
+        let mut visited = vec![false; self.tri_count()];
+        visited[seed] = true;
+        let mut stack = vec![seed];
+        let mut cluster = Vec::new();
+        while let Some(t) = stack.pop() {
+            cluster.push(t);
+            let [a, b, c] = self.triangle_idx(t);
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                let key = (x.min(y), x.max(y));
+                if let Some(tris) = edge_tris.get(&key) {
+                    for &u in tris {
+                        if visited[u] {
+                            continue;
+                        }
+                        let nu = self.triangle_normal(u).unwrap_or(Vector3::z());
+                        if nu.dot(&seed_normal) >= cos_tol {
+                            visited[u] = true;
+                            stack.push(u);
+                        }
+                    }
+                }
+            }
+        }
+        cluster.sort_unstable();
+        cluster
+    }
+
+    /// Boundary of a triangle cluster: edges used by exactly one cluster
+    /// triangle (manifold clusters only). Sorted, deterministic.
+    pub fn cluster_boundary_edges(&self, cluster: &[usize]) -> Vec<[u32; 2]> {
+        let mut count: HashMap<(u32, u32), usize> = HashMap::new();
+        for &t in cluster {
+            let [a, b, c] = self.triangle_idx(t);
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                *count.entry((x.min(y), x.max(y))).or_insert(0) += 1;
+            }
+        }
+        let mut out: Vec<[u32; 2]> = count
+            .into_iter()
+            .filter(|(_, n)| *n == 1)
+            .map(|((a, b), _)| [a, b])
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Sharp feature edges grouped into tangent chains (W-04): two sharp
+    /// edges join a chain when they share an endpoint and their directions
+    /// away from that endpoint stay within `tangent_tol` of collinear —
+    /// the "fillet this run of edges" grouping. A cube yields 12 chains
+    /// of one edge; a cylinder rim yields one closed loop. Chains are
+    /// sorted (internally and between each other), deterministic.
+    pub fn sharp_edge_chains(&self, angle_tol: f64, tangent_tol: f64) -> Vec<Vec<[u32; 2]>> {
+        let edges = self.sharp_edges(angle_tol);
+        let mut at: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (i, e) in edges.iter().enumerate() {
+            at.entry(e[0]).or_default().push(i);
+            at.entry(e[1]).or_default().push(i);
+        }
+        // Unit direction of edge `e` pointing *away* from vertex `v`.
+        let dir_from = |e: &[u32; 2], v: u32| -> Vector3 {
+            let other = if e[0] == v { e[1] } else { e[0] };
+            (self.positions[other as usize] - self.positions[v as usize])
+                .try_normalize(1e-12)
+                .unwrap_or_else(Vector3::zeros)
+        };
+        let cos_t = tangent_tol.cos();
+        let mut visited = vec![false; edges.len()];
+        let mut chains = Vec::new();
+        for start in 0..edges.len() {
+            if visited[start] {
+                continue;
+            }
+            visited[start] = true;
+            let mut chain = vec![edges[start]];
+            let mut queue = vec![start];
+            while let Some(ei) = queue.pop() {
+                for v in [edges[ei][0], edges[ei][1]] {
+                    if let Some(neighbors) = at.get(&v) {
+                        for &nj in neighbors {
+                            if visited[nj] {
+                                continue;
+                            }
+                            let d_cur = dir_from(&edges[ei], v);
+                            let d_new = dir_from(&edges[nj], v);
+                            // Collinear continuation: a chain (e.g. a full
+                            // circle rim) passes *through* the shared
+                            // vertex, so consecutive directions away from
+                            // it are nearly antiparallel — hence |dot|.
+                            if d_cur.dot(&d_new).abs() >= cos_t {
+                                visited[nj] = true;
+                                chain.push(edges[nj]);
+                                queue.push(nj);
+                            }
+                        }
+                    }
+                }
+            }
+            chain.sort();
+            chains.push(chain);
+        }
+        chains.sort();
+        chains
     }
 
     /// Turn a list of index edges into world-space segments.
@@ -554,6 +677,71 @@ mod tests {
         let sharp = m.sharp_edges(45.0_f64.to_radians());
         assert_eq!(sharp.len(), 12, "a cube has 12 feature edges");
         assert!(m.boundary_edges().is_empty());
+    }
+
+    // ---- W-04 topology queries -------------------------------------------
+
+    #[test]
+    fn face_cluster_picks_one_flat_face_of_a_box() {
+        let m = unit_box();
+        // Any seed triangle belongs to a face of exactly 2 coplanar
+        // triangles (1×1×1 box, 12 triangles total).
+        for seed in 0..m.tri_count() {
+            let cluster = m.face_cluster(seed, 1.0_f64.to_radians());
+            assert_eq!(cluster.len(), 2, "seed {seed}: {:?}", cluster);
+            assert!(cluster.contains(&seed));
+            // The boundary is the 4-edge rectangle of that face.
+            let boundary = m.cluster_boundary_edges(&cluster);
+            assert_eq!(boundary.len(), 4, "seed {seed}");
+            // Cluster triangles share the same normal (coplanar).
+            let n0 = m.triangle_normal(cluster[0]).unwrap();
+            let n1 = m.triangle_normal(cluster[1]).unwrap();
+            assert!(n0.dot(&n1) > 0.999);
+        }
+    }
+
+    #[test]
+    fn face_cluster_of_cylinder_side_is_a_narrow_band() {
+        let cfg = forge_core::TessellationConfig::default();
+        let m = crate::primitives::cylinder(Point3::origin(), 5.0, 10.0, &cfg);
+        // Side triangles: normals vary smoothly, so a 1° cluster stays a
+        // narrow band (never the whole side, never empty).
+        let cluster = m.face_cluster(4, 1.0_f64.to_radians());
+        assert!(!cluster.is_empty());
+        assert!(
+            cluster.len() < m.tri_count() / 2,
+            "band, not the whole side"
+        );
+    }
+
+    #[test]
+    fn sharp_edge_chains_box_yields_single_edge_chains() {
+        let m = unit_box();
+        let chains = m.sharp_edge_chains(45.0_f64.to_radians(), 30.0_f64.to_radians());
+        // 12 cube edges; corners are perpendicular, so no chaining.
+        assert_eq!(chains.len(), 12);
+        for c in &chains {
+            assert_eq!(c.len(), 1);
+        }
+    }
+
+    #[test]
+    fn sharp_edge_chains_cylinder_rims_are_two_loops() {
+        let cfg = forge_core::TessellationConfig::default();
+        let m = crate::primitives::cylinder(Point3::origin(), 5.0, 10.0, &cfg);
+        let chains = m.sharp_edge_chains(45.0_f64.to_radians(), 30.0_f64.to_radians());
+        // Two rims (bottom + top), each one closed tangent loop. The side
+        // seams are smooth (no sharp edges between side triangles).
+        assert_eq!(
+            chains.len(),
+            2,
+            "{:?}",
+            chains.iter().map(|c| c.len()).collect::<Vec<_>>()
+        );
+        let n = m.tri_count();
+        for chain in &chains {
+            assert_eq!(chain.len(), n / 4, "each rim is one full circle");
+        }
     }
 
     #[test]

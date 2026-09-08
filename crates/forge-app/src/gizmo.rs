@@ -218,13 +218,14 @@ fn world_per_pixel(camera: &Camera, rect_h_px: f64, anchor: &Point3) -> f64 {
 }
 
 /// World point → screen position (logical px, viewport-rect local).
-struct Projector {
+/// Shared by the gizmo and the sub-body selection overlay (W-04).
+pub(crate) struct Projector {
     vp: nalgebra::Matrix4<f32>,
     rect: egui::Rect,
 }
 
 impl Projector {
-    fn new(camera: &Camera, aspect: f64, rect: egui::Rect) -> Self {
+    pub(crate) fn new(camera: &Camera, aspect: f64, rect: egui::Rect) -> Self {
         let cols = camera.view_proj(aspect).to_cols_array();
         let mut vp = nalgebra::Matrix4::<f32>::identity();
         for c in 0..4 {
@@ -235,7 +236,7 @@ impl Projector {
         Self { vp, rect }
     }
 
-    fn project(&self, p: &Point3) -> Option<egui::Pos2> {
+    pub(crate) fn project(&self, p: &Point3) -> Option<egui::Pos2> {
         let clip = self.vp * nalgebra::Point4::new(p.x as f32, p.y as f32, p.z as f32, 1.0);
         if clip.w <= 1e-6 {
             return None; // behind the camera
@@ -249,7 +250,7 @@ impl Projector {
 }
 
 /// Screen-space distance from a point to a line segment.
-fn dist_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+pub(crate) fn dist_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     let ab = b - a;
     let len_sq = ab.length_sq();
     if len_sq < 1e-9 {

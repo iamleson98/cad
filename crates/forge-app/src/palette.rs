@@ -259,6 +259,31 @@ pub fn entries() -> Vec<PaletteEntry> {
             keywords: "gizmo manipulator rotate spin ring handle",
             action: GizmoRotate,
         },
+        PaletteEntry {
+            label: "Select: faces (sub-body picking)",
+            keywords: "select picking face cluster sub-body",
+            action: PickFaces,
+        },
+        PaletteEntry {
+            label: "Select: edges (sharp chains)",
+            keywords: "select picking edge chain sub-body",
+            action: PickEdges,
+        },
+        PaletteEntry {
+            label: "Select: vertices",
+            keywords: "select picking vertex corner sub-body",
+            action: PickVertices,
+        },
+        PaletteEntry {
+            label: "Select: bodies",
+            keywords: "select picking whole body solid",
+            action: PickBodies,
+        },
+        PaletteEntry {
+            label: "New sketch on selected face",
+            keywords: "sketch face planar profile draw",
+            action: SketchOnSelectedFace,
+        },
     ]
 }
 
@@ -316,6 +341,16 @@ pub enum PaletteAction {
     GizmoTranslate,
     /// W-01: gizmo rotate mode.
     GizmoRotate,
+    /// W-04: pick whole bodies (default).
+    PickBodies,
+    /// W-04: pick coplanar face clusters.
+    PickFaces,
+    /// W-04: pick sharp-edge chains.
+    PickEdges,
+    /// W-04: pick vertices.
+    PickVertices,
+    /// W-04: create a sketch on the selected planar face.
+    SketchOnSelectedFace,
 }
 
 /// Simple subsequence fuzzy match score; `usize::MAX` means no match.
@@ -453,6 +488,28 @@ impl PaletteAction {
                     "Gizmo: rotate (R) — select a body, drag a ring (5\u{00b0} snap, Shift = off)",
                 );
             }
+
+            PickBodies => {
+                app.pick_mode = crate::picking::PickMode::Bodies;
+                app.selection.clear();
+                app.set_status("Picking bodies (whole solids)");
+            }
+            PickFaces => {
+                app.pick_mode = crate::picking::PickMode::Faces;
+                app.selection.clear();
+                app.set_status("Picking faces — click a surface to select its coplanar patch");
+            }
+            PickEdges => {
+                app.pick_mode = crate::picking::PickMode::Edges;
+                app.selection.clear();
+                app.set_status("Picking edges — click near a sharp edge (tangent chains)");
+            }
+            PickVertices => {
+                app.pick_mode = crate::picking::PickMode::Vertices;
+                app.selection.clear();
+                app.set_status("Picking vertices — click near a corner");
+            }
+            SketchOnSelectedFace => app.add_sketch_on_selected_face(),
 
             ToggleSection => {
                 let enabled = app.render_options.section.is_some();
@@ -726,6 +783,86 @@ impl ForgeApp {
                         .execute(Command::AddFeature { node }, &mut self.doc);
                 }
                 self.set_status("Sketch created on the datum plane");
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
+    }
+
+    /// New sketch carried by the selected planar face (W-04): the face
+    /// cluster's plane (centroid + outward normal) carries a rectangle
+    /// profile, ready for extrude/cut directly on the face.
+    pub(crate) fn add_sketch_on_selected_face(&mut self) {
+        let Some((body, face)) = self.selection.single_face() else {
+            self.set_status("Select a planar face first (pick mode: Faces)");
+            return;
+        };
+        // Resolve the face cluster from the last evaluation.
+        let plane = self.last_evaluation.as_ref().and_then(|ev| {
+            let b = ev.bodies.iter().find(|b| b.id == body)?;
+            let cluster = b
+                .mesh
+                .face_cluster(face.raw() as usize, 1.0_f64.to_radians());
+            let seed = cluster.first()?;
+            let normal = b.mesh.triangle_normal(*seed)?;
+            // Centroid of the cluster vertices.
+            let mut centroid = forge_core::Vector3::zeros();
+            let mut count = 0usize;
+            for t in &cluster {
+                for v in b.mesh.triangle_idx(*t) {
+                    centroid += b.mesh.positions[v as usize].coords;
+                    count += 1;
+                }
+            }
+            let origin = Point3::from(centroid / count.max(1) as f64);
+            forge_core::Plane::new(origin, normal)
+        });
+        let Some(plane) = plane else {
+            self.set_status("Selected face is no longer valid (re-evaluate and re-pick)");
+            return;
+        };
+
+        // Face extent: the rectangle is sized from the *cluster* bbox
+        // (40% of the smallest extent, min 1 mm) so it stays on the face.
+        let half = {
+            let ev = self.last_evaluation.as_ref();
+            let b = ev
+                .and_then(|ev| ev.bodies.iter().find(|b| b.id == body))
+                .expect("body re-checked above");
+            let cluster = b
+                .mesh
+                .face_cluster(face.raw() as usize, 1.0_f64.to_radians());
+            let mut bb_min = forge_core::Vector3::repeat(f64::INFINITY);
+            let mut bb_max = forge_core::Vector3::repeat(f64::NEG_INFINITY);
+            for t in &cluster {
+                for v in b.mesh.triangle_idx(*t) {
+                    let p = &b.mesh.positions[v as usize];
+                    bb_min = bb_min.inf(&p.coords);
+                    bb_max = bb_max.sup(&p.coords);
+                }
+            }
+            let extents = bb_max - bb_min;
+            (0.4 * extents.iter().copied().fold(f64::INFINITY, f64::min)).max(1.0)
+        };
+
+        let sketch_id = SketchId::new(self.doc.allocator.next_id());
+        let mut sketch = Sketch::new(
+            sketch_id,
+            "face profile",
+            SketchPlane::Face { plane, body, face },
+        );
+        sketch.add_rectangle(
+            Point2::new(-half, -half * 0.66),
+            Point2::new(half, half * 0.66),
+        );
+        match self.doc.add_feature(Feature::Sketch(sketch.clone())) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(Command::AddFeature { node }, &mut self.doc);
+                }
+                self.set_status("Sketch created on the selected face — extrude or cut from it");
                 self.request_evaluation();
             }
             Err(e) => self.set_status(format!("{e}")),

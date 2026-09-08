@@ -126,6 +126,26 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 let ny = 1.0 - (local.y / rect.height()) as f64 * 2.0;
                 let aspect = (rect.width() / rect.height()) as f64;
                 app.measure_click((nx, ny), aspect);
+            } else if app.pick_mode != crate::picking::PickMode::Bodies {
+                // W-04: sub-body picks via CPU raycast + topology queries.
+                let nx = (local.x / rect.width()) as f64 * 2.0 - 1.0;
+                let ny = 1.0 - (local.y / rect.height()) as f64 * 2.0;
+                let aspect = (rect.width() / rect.height()) as f64;
+                let click = egui::pos2(local.x, local.y);
+                match crate::picking::sub_pick(app, (nx, ny), aspect, rect, click) {
+                    Some(pick) => {
+                        if app.selection.items.contains(&pick.item) {
+                            app.selection.toggle(pick.item);
+                        } else {
+                            app.selection.select(pick.item);
+                        }
+                        app.set_status(pick.status);
+                    }
+                    None => {
+                        app.selection.clear();
+                        app.set_status("Selection cleared");
+                    }
+                }
             } else {
                 let px = (
                     (local.x * pixels_per_point) as u32,
@@ -162,6 +182,9 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
     // ---- Gizmo overlay (W-01): after the 3D paint callback (painter
     // shapes render in submission order) and above the grid. ----
     crate::gizmo::gizmo_draw(ui, app, rect);
+
+    // ---- Sub-body selection highlight (W-04) ----
+    crate::picking::draw_sub_selection(ui, app, rect);
 
     // ---- Navigation cube (FR-RD-04) ----
     navigation_cube(ui, &mut app.camera, rect);
