@@ -176,9 +176,30 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       ground grid survives the cut), and picking (clipped geometry can
       not be selected). Toolbar: toggle + axis (X/Y/Z) + offset slider +
       flip. Cap-plane rendering deferred to W-04 face selection.*
-- [ ] **W-03 Depth-peeled transparency** `(M)` `P1`
+- [x] **W-03 Depth-peeled transparency** `(M)` `P1`
       Dual depth peeling (8–16 layers) replacing sorted blending; correct
       interpenetrating transparent geometry (documented in render TODO).
+      *Done: **front depth peeling** — `peel_layers` iterations (default
+      8, `RenderOptions`) of a depth-only peel pass + a per-layer
+      under-blend pass, then one residual pass for everything behind
+      the last layer. Peel pass: survivors strictly behind the previous
+      layer write depth into a ping-pong `Depth32Float` attachment
+      (Less test min-accumulates → the next front layer); the blend
+      pass keeps fragments within `LAYER_EPS` of that layer and
+      premultiplied-under-blends into an `Rgba16Float` accumulation
+      (front-to-back, no CPU sorting — `GpuBody.centroid` removed).
+      Residual = one unsorted pass for K+1-nested and farther layers.
+      The composite pass composites `accum.rgb + (1-a)·scene` before
+      edge-detect/tone-map (background included; wireframe mode keeps
+      its pre-peel look). Section clip + X-ray alpha apply in every
+      peel fragment; blend passes depth-test against opaque depth only.
+      Bounds live in depth attachments (no 32F color blending —
+      Metal-safe). Tests: every WGSL source now parses + validates
+      headless via `wgpu::naga` (the same validator wgpu runs), which
+      immediately caught a latent composite-shader type bug
+      (`textureLoad` returned `vec4` into an `f32`). Dual peeling
+      (front+back per iteration, half the passes) remains an
+      optimization option if 8 layers ever show.*
 - [x] **W-04 Face/edge/vertex selection model** `(M)` `P1`
       Picking granularity beyond bodies: ray→BVH→triangle → face cluster
       (coplanar/normal-threshold flood), edge chains (sharp edge sets),

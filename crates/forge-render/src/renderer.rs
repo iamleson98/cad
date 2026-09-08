@@ -6,9 +6,10 @@
 //!    depth writing.
 //! 2. **Edge line pass** – sharp-feature edges + ground grid, depth-tested
 //!    with a slope-scaled bias.
-//! 3. **Transparent pass** – CPU-sorted back-to-front, alpha blending,
-//!    depth-read-only. (Depth-peeled transparency is the Phase-2 roadmap
-//!    item; the pass structure here is where the peel loop plugs in.)
+//! 3. **Transparent pass** – W-03: order-independent front depth
+//!    peeling (`RenderOptions::peel_layers` layers + one residual
+//!    pass, under-blended front-to-back). No CPU sorting; correct for
+//!    interpenetrating geometry.
 //! 4. **Pick pass** (on demand) – body ids as `Rgba32Uint` + depth, 1×1
 //!    readback at the clicked pixel.
 //! 5. **Composite pass** – fullscreen triangle sampling color/normal/depth,
@@ -79,6 +80,10 @@ pub struct RenderOptions {
     pub section: Option<SectionPlane>,
     /// X-ray alpha when `display_mode == XRay`.
     pub xray_alpha: f32,
+    /// W-03: front depth-peel iterations before the residual pass.
+    /// More layers = more exactly-sorted transparency; the residual
+    /// pass blends everything beyond the last layer in one go.
+    pub peel_layers: u32,
 }
 
 impl Default for RenderOptions {
@@ -91,6 +96,7 @@ impl Default for RenderOptions {
             display_mode: DisplayMode::default(),
             section: None,
             xray_alpha: 0.35,
+            peel_layers: 8,
         }
     }
 }
@@ -105,8 +111,6 @@ struct GpuBody {
     line_count: u32,
     line_bg: wgpu::BindGroup,
     style: BodyStyle,
-    /// Centroid (world) for transparency sorting.
-    centroid: forge_core::Point3,
     /// World-space AABB for frustum culling (K-05).
     aabb_min: [f64; 3],
     aabb_max: [f64; 3],
@@ -171,7 +175,16 @@ pub struct Renderer {
     camera_bg: wgpu::BindGroup,
 
     mesh_pipeline: wgpu::RenderPipeline,
-    transparent_pipeline: wgpu::RenderPipeline,
+    /// W-03: depth-only peel pass (finds the next front layer).
+    peel_pipeline: wgpu::RenderPipeline,
+    /// W-03: blend one peeled layer (under-blending).
+    peel_blend_pipeline: wgpu::RenderPipeline,
+    /// W-03: blend all residual layers behind the last peeled one.
+    peel_residual_pipeline: wgpu::RenderPipeline,
+    /// W-03: camera uniform + previous-layer depth texture.
+    peel_bgl: wgpu::BindGroupLayout,
+    /// W-03: bind groups for reading peel layer A / B.
+    peel_bg: [Option<wgpu::BindGroup>; 2],
     line_pipeline: wgpu::RenderPipeline,
     /// Unclipped line pipeline (ground grid — never cut by the section
     /// plane).
@@ -195,6 +208,10 @@ pub struct Renderer {
     depth_tex: Option<wgpu::Texture>,
     pick_tex: Option<wgpu::Texture>,
     pick_depth_tex: Option<wgpu::Texture>,
+    /// W-03: ping-pong front-layer depth bounds (Depth32Float).
+    peel_tex: [Option<wgpu::Texture>; 2],
+    /// W-03: front-to-back under-blended transparency accumulation.
+    accum_tex: Option<wgpu::Texture>,
 
     // Picking state.
     pending_pick: Option<(u32, u32)>,
@@ -309,11 +326,6 @@ impl Renderer {
                 clamp: 0.0,
             },
         };
-        let depth_stencil_read = wgpu::DepthStencilState {
-            depth_write_enabled: Some(false),
-            depth_compare: Some(wgpu::CompareFunction::LessEqual),
-            ..depth_stencil_write.clone()
-        };
 
         let mesh_targets = vec![
             Some(wgpu::ColorTargetState {
@@ -350,39 +362,142 @@ impl Renderer {
             cache: None,
         });
 
-        let transparent_targets = vec![
-            Some(wgpu::ColorTargetState {
-                format: COLOR_FORMAT,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            }),
-            Some(wgpu::ColorTargetState {
-                format: NORMAL_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::empty(),
-            }),
-        ];
-        let transparent_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("transparent-pipeline"),
-            layout: Some(&mesh_layout),
-            vertex: wgpu::VertexState {
-                module: &mesh_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &vertex_buffers,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &mesh_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &transparent_targets,
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(depth_stencil_read),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+        // W-03: depth-peeling pipelines. The peel pass is depth-only
+        // (no color targets, Less test + write on the ping-pong Depth32
+        // bounds); the blend passes shade one layer into the
+        // accumulation texture with premultiplied under-blending
+        // (front-to-back — nearer fragments attenuate farther ones).
+        let peel_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("peel-shader"),
+            source: wgpu::ShaderSource::Wgsl(shaders::PEEL_SHADER.into()),
         });
+        let peel_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("peel-layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let peel_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("peel-pipeline-layout"),
+            bind_group_layouts: &[Some(&peel_bgl), Some(&model_bgl)],
+            immediate_size: 0,
+        });
+        let under_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let make_peel_pipeline = |label: &str,
+                                  entry: &str,
+                                  targets: &[Option<wgpu::ColorTargetState>],
+                                  depth: wgpu::DepthStencilState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&peel_layout),
+                vertex: wgpu::VertexState {
+                    module: &peel_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &vertex_buffers,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &peel_shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets,
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let peel_pipeline = make_peel_pipeline(
+            "peel-pipeline",
+            "fs_peel",
+            &[],
+            wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                // Survivors min-accumulate into the cleared-to-1.0
+                // attachment: Less keeps the nearest survivor.
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 0,
+                    slope_scale: 0.0,
+                    clamp: 0.0,
+                },
+            },
+        );
+        let peel_blend_pipeline = make_peel_pipeline(
+            "peel-blend-pipeline",
+            "fs_blend",
+            &[Some(wgpu::ColorTargetState {
+                format: COLOR_FORMAT,
+                blend: Some(under_blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                // Blend passes depth-test against the OPAQUE depth only.
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 0,
+                    slope_scale: 0.0,
+                    clamp: 0.0,
+                },
+            },
+        );
+        let peel_residual_pipeline = make_peel_pipeline(
+            "peel-residual-pipeline",
+            "fs_blend_residual",
+            &[Some(wgpu::ColorTargetState {
+                format: COLOR_FORMAT,
+                blend: Some(under_blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 0,
+                    slope_scale: 0.0,
+                    clamp: 0.0,
+                },
+            },
+        );
 
         let line_buffers = [Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<LineVertex>() as u64,
@@ -555,6 +670,17 @@ impl Renderer {
                     },
                     count: None,
                 },
+                // W-03: transparency accumulation (binding 5).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -630,7 +756,11 @@ impl Renderer {
             camera_buf,
             camera_bg,
             mesh_pipeline,
-            transparent_pipeline,
+            peel_pipeline,
+            peel_blend_pipeline,
+            peel_residual_pipeline,
+            peel_bgl,
+            peel_bg: [None, None],
             line_pipeline,
             grid_pipeline,
             pick_pipeline,
@@ -649,6 +779,8 @@ impl Renderer {
             depth_tex: None,
             pick_tex: None,
             pick_depth_tex: None,
+            peel_tex: [None, None],
+            accum_tex: None,
             pending_pick: None,
             pick_readback: None,
             pick_result: None,
@@ -779,7 +911,6 @@ impl Renderer {
                 line_count: line_verts.len() as u32,
                 line_bg,
                 style: body.style,
-                centroid: mesh.centroid(),
                 aabb_min: [bb.min.x, bb.min.y, bb.min.z],
                 aabb_max: [bb.max.x, bb.max.y, bb.max.z],
                 pick_id: body.id.raw() as u32,
@@ -871,6 +1002,82 @@ impl Renderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         }));
+
+        // W-03: ping-pong peel bounds + the accumulation target.
+        self.peel_tex = [None, None];
+        self.accum_tex = None;
+        let make_peel_tex = |label: &str| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH_FORMAT,
+                usage,
+                view_formats: &[],
+            })
+        };
+        self.peel_tex = [
+            Some(make_peel_tex("peel-depth-a")),
+            Some(make_peel_tex("peel-depth-b")),
+        ];
+        self.accum_tex = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("transparent-accum"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: COLOR_FORMAT,
+            usage,
+            view_formats: &[],
+        }));
+
+        // Bind groups reading peel layer A / B (camera uniform + depth
+        // view). The sampled views use the Depth aspect explicitly.
+        let make_peel_bg = |label: &str, tex: &wgpu::Texture| {
+            let view = tex.create_view(&wgpu::TextureViewDescriptor {
+                label: Some(label),
+                format: Some(DEPTH_FORMAT),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                aspect: wgpu::TextureAspect::DepthOnly,
+                base_mip_level: 0,
+                mip_level_count: None,
+                base_array_layer: 0,
+                array_layer_count: None,
+                usage: None,
+            });
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &self.peel_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.camera_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                ],
+            })
+        };
+        self.peel_bg = [
+            self.peel_tex[0]
+                .as_ref()
+                .map(|t| make_peel_bg("peel-bg-a", t)),
+            self.peel_tex[1]
+                .as_ref()
+                .map(|t| make_peel_bg("peel-bg-b", t)),
+        ];
     }
 
     /// Record the offscreen passes (opaque, lines, transparent, pick).
@@ -1059,54 +1266,205 @@ impl Renderer {
             }
         }
 
-        // --- Pass 3: transparent bodies, back-to-front. ---
+        // --- Pass 3 (W-03): order-independent front depth peeling. ---
         {
-            let eye = camera.eye();
             let xray = options.display_mode == DisplayMode::XRay;
-            let mut sorted: Vec<&GpuBody> = self
+            let transparent: Vec<&GpuBody> = self
                 .bodies
                 .iter()
                 .filter(|b| (xray || b.style.transparent || b.style.color[3] < 1.0) && visible(b))
                 .collect();
-            sorted.sort_by_key(|b| {
-                let d = (b.centroid - eye).norm();
-                d.to_bits() // descending handled below by reverse
-            });
-            sorted.reverse();
 
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("transparent-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
+            let (Some(accum_tex), [Some(peel_a), Some(peel_b)]) = (
+                self.accum_tex.as_ref(),
+                [&self.peel_tex[0], &self.peel_tex[1]].map(|t| t.as_ref()),
+            ) else {
+                // Targets not created (degenerate size): no transparency.
+                if !transparent.is_empty() {
+                    log::warn!("peel targets missing; transparent bodies skipped");
+                }
+                return;
+            };
+            let accum_view = accum_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let peel_view_a = peel_a.create_view(&wgpu::TextureViewDescriptor::default());
+            let peel_view_b = peel_b.create_view(&wgpu::TextureViewDescriptor::default());
+
+            // Seed: clear the accumulation and the layer-0 depth to 0.0
+            // ("nothing peeled yet" — survivors must be strictly
+            // behind). A depth-only pass, no draws.
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("peel-clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &accum_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &peel_view_a,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0),
+                            store: wgpu::StoreOp::Store,
+                        }),
                     }),
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                }),
-                multiview_mask: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            rpass.set_pipeline(&self.transparent_pipeline);
-            rpass.set_bind_group(0, &self.camera_bg, &[]);
-            for body in sorted {
-                rpass.set_bind_group(1, &body.model_bg, &[]);
-                rpass.set_index_buffer(body.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-                rpass.set_vertex_buffer(0, body.vertex_buf.slice(..));
-                rpass.draw_indexed(0..body.index_count, 0, 0..1);
+                    multiview_mask: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                // No pipeline, no draws — this pass only clears.
+                let _ = &mut rpass;
+            }
+
+            if !transparent.is_empty() {
+                let layers = options.peel_layers.max(1) as usize;
+                for i in 1..=layers {
+                    // Ping-pong: iteration i reads bounds[i-1] (bind
+                    // group), writes bounds[i] (cleared to 1.0 = far;
+                    // the Less depth test min-accumulates survivors).
+                    let (write_view, read_bg, write_bg) = if (i - 1) % 2 == 0 {
+                        (
+                            &peel_view_b,
+                            self.peel_bg[0].as_ref().expect("peel bind groups"),
+                            self.peel_bg[1].as_ref().expect("peel bind groups"),
+                        )
+                    } else {
+                        (
+                            &peel_view_a,
+                            self.peel_bg[1].as_ref().expect("peel bind groups"),
+                            self.peel_bg[0].as_ref().expect("peel bind groups"),
+                        )
+                    };
+
+                    // (a) Peel: find the next front layer.
+                    {
+                        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("peel-pass"),
+                            color_attachments: &[],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view: write_view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(1.0),
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(0),
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                },
+                            ),
+                            multiview_mask: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                        });
+                        rpass.set_pipeline(&self.peel_pipeline);
+                        rpass.set_bind_group(0, read_bg, &[]);
+                        for body in &transparent {
+                            rpass.set_bind_group(1, &body.model_bg, &[]);
+                            rpass.set_index_buffer(
+                                body.index_buf.slice(..),
+                                wgpu::IndexFormat::Uint32,
+                            );
+                            rpass.set_vertex_buffer(0, body.vertex_buf.slice(..));
+                            rpass.draw_indexed(0..body.index_count, 0, 0..1);
+                        }
+                    }
+
+                    // (b) Blend the new front layer (premultiplied
+                    // under-blending into the accumulation). The
+                    // fragment reads the just-written layer depth via
+                    // the WRITE side's bind group.
+                    {
+                        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("peel-blend-pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &accum_view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                                depth_slice: None,
+                            })],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view: &depth_view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(0),
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                },
+                            ),
+                            multiview_mask: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                        });
+                        rpass.set_pipeline(&self.peel_blend_pipeline);
+                        rpass.set_bind_group(0, write_bg, &[]);
+                        for body in &transparent {
+                            rpass.set_bind_group(1, &body.model_bg, &[]);
+                            rpass.set_index_buffer(
+                                body.index_buf.slice(..),
+                                wgpu::IndexFormat::Uint32,
+                            );
+                            rpass.set_vertex_buffer(0, body.vertex_buf.slice(..));
+                            rpass.draw_indexed(0..body.index_count, 0, 0..1);
+                        }
+                    }
+                }
+
+                // (c) Residual: everything behind the last peeled layer
+                // blends in one unsorted pass. The loop's last write
+                // went to side (layers % 2).
+                let last_bg = self.peel_bg[layers % 2].as_ref().expect("peel bind groups");
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("peel-residual-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &accum_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                        }),
+                        multiview_mask: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    rpass.set_pipeline(&self.peel_residual_pipeline);
+                    rpass.set_bind_group(0, last_bg, &[]);
+                    for body in &transparent {
+                        rpass.set_bind_group(1, &body.model_bg, &[]);
+                        rpass.set_index_buffer(body.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                        rpass.set_vertex_buffer(0, body.vertex_buf.slice(..));
+                        rpass.draw_indexed(0..body.index_count, 0, 0..1);
+                    }
+                }
             }
         }
 
@@ -1116,6 +1474,11 @@ impl Renderer {
         }
 
         // Composite bind group needs the current textures.
+        let accum_view = self
+            .accum_tex
+            .as_ref()
+            .expect("targets ensured")
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let composite_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("composite-bind-group"),
             layout: &self.composite_bgl,
@@ -1139,6 +1502,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: self.composite_uniform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&accum_view),
                 },
             ],
         });
