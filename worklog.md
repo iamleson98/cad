@@ -29,3 +29,19 @@ Stage Summary:
 - Deliverables: two-layer E2E harness (native 43 tests + browser 22 tests) sharing one app code path through the debug-only in-app bridge; 6 real crash/UX bugs fixed; CI runs the browser suite headlessly on every push.
 - Key insight recorded: the user's desktop crash was the gizmo u8 overflow (selection → panic); the desktop app and browser build share it, so the browser E2E also guards the desktop.
 - Next: push, watch the first CI e2e run (cold cache ~15 min, warm ~5), then continue TODO items (W-02 section polish, W-05 display modes, W-08 measurement modes, W-01 gizmo refinement) with the harness as the regression net.
+
+---
+Task ID: 2
+Agent: main (Super Z)
+Task: Fix the CI wasm release-build failure, land the full pipeline green.
+
+Work Log:
+- The W-11 push failed the wasm job: `trunk build --release` hit 13 E0433 "cannot find bridge in crate" errors — the bridge module was cfg-gated out of release builds while its call sites (ui.rs/theme.rs/viewport.rs, bridge::button/checkbox wrappers) compiled unconditionally. Root cause: local verification only ran dev-profile checks; release profiles compile a different cfg matrix.
+- Restructured the bridge: `src/bridge.rs` (shell: WidgetInfo + always-compiled wrappers using `record`), `src/bridge/imp.rs` (real machinery, cfg any(test, debug_assertions)), `src/bridge/noop.rs` (zero-cost stubs, release). Call sites dropped their cfg gates; apply_test_action always compiles.
+- Verified the full matrix locally: dev + release x native + wasm32 all compile clean; 43 native E2E + 22 browser E2E still green.
+- CI hardening: added a native release-profile check step (ubuntu job) so `cargo build --release` breakage (what desktop users ship) is caught on every push, not only via the wasm release bundle.
+- Pushed 7d3ce8f; run 34314849991: ALL SIX JOBS GREEN — rustfmt, 3-OS check+clippy+test, wasm32 (release trunk bundle), e2e browser suite (22 tests, 4 min warm).
+
+Stage Summary:
+- The complete fast-iteration loop the user asked for now exists: change code → cargo test -p forge-app (1.3 s, 43 UI tests) → npx playwright test (~5 min, 22 browser tests) → push → CI runs everything headlessly in ~4-8 min warm.
+- Lesson recorded: ALWAYS verify release profiles when using cfg-gated modules (dev checks hide it); CI now enforces it on both targets.
