@@ -96,15 +96,18 @@ pub fn read_stl_bytes(data: &[u8]) -> Result<TriMesh> {
         return Err(IoError::Malformed("file too small".into()));
     }
     // Detection: a valid binary STL has exactly 84 + 50*n bytes and a
-    // plausible triangle count.
+    // plausible triangle count. 64-bit math: `count * 50` overflows a
+    // 32-bit usize on wasm when an ASCII file's header bytes parse as a
+    // bogus ~1.8e9 triangle count (the E2E import test caught this as a
+    // hard panic in the browser build).
     let count = u32::from_le_bytes(
         data[BINARY_HEADER_LEN..BINARY_HEADER_LEN + 4]
             .try_into()
             .expect("slice length 4"),
-    ) as usize;
-    let expected = BINARY_HEADER_LEN + 4 + count * 50;
-    if data.len() == expected && count > 0 {
-        read_binary(data, count)
+    ) as u64;
+    let expected = BINARY_HEADER_LEN as u64 + 4 + count * 50;
+    if data.len() as u64 == expected && count > 0 {
+        read_binary(data, count as usize)
     } else if looks_ascii(data) {
         read_ascii(data)
     } else {

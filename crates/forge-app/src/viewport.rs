@@ -71,6 +71,11 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
     let (rect, response) =
         ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
 
+    // E2E bridge: the viewport itself is a clickable region (selection,
+    // measure picks, gizmo drags) — tests click at its rect.
+    #[cfg(any(test, debug_assertions))]
+    crate::bridge::record("viewport", "3D viewport", "viewport", rect, true);
+
     let pixels_per_point = ui.ctx().pixels_per_point();
 
     // ---- Camera input (FR-RD-04) ----
@@ -152,8 +157,15 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
                     (local.y * pixels_per_point) as u32,
                 );
                 if let Some(renderer) = app.renderer() {
-                    renderer.lock().unwrap().schedule_pick(px);
-                    app.pick_requested = true;
+                    // Poison-tolerant lock: a panic that happened while a
+                    // frame held the renderer must not cascade into a
+                    // second panic on the next pick click (the app would
+                    // die on *every* subsequent click — observed as
+                    // "click a button and it quits").
+                    if let Ok(mut r) = renderer.lock() {
+                        r.schedule_pick(px);
+                        app.pick_requested = true;
+                    }
                 }
             }
         }

@@ -121,3 +121,73 @@ jobs:
         # parser fails. `env -u` actually UNSETS it — an empty string
         # is still "set" and trips the same bug (verified locally).
         run: env -u NO_COLOR trunk build --release
+
+  # E2E: the intensive browser suite — headless Chromium drives the REAL
+  # wasm app (trunk DEBUG bundle: the E2E bridge is compiled into debug
+  # builds via debug_assertions) through every button, menu and feature,
+  # asserting state changes, downloads, imports and absence of panics.
+  # The same flows run natively in cargo test (forge-app ui_tests), so
+  # logic bugs surface in seconds on every OS; this job adds the real
+  # browser: wasm + WebGL2 (SwiftShader) + the JS bridge.
+  e2e:
+    name: e2e — browser suite (headless Chromium)
+    needs: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable + wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Own cache lineage: debug-profile wasm artifacts (the release
+          # bundle artifacts of the `wasm` job fingerprint differently).
+          shared-key: forgecad-ci-e2e
+
+      - name: Install trunk (release binary)
+        run: |
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C "$HOME/.cargo/bin"
+          trunk --version
+
+      # DEBUG bundle on purpose: no wasm-opt/opt passes (much faster
+      # compile) and the E2E bridge is active (debug_assertions).
+      - name: Build the debug browser bundle
+        working-directory: crates/forge-app
+        run: env -u NO_COLOR trunk build
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('e2e/package-lock.json') }}
+
+      - name: Install e2e dependencies + browser
+        working-directory: e2e
+        run: |
+          npm ci
+          # Browser binaries come from the cache; the system libraries
+          # still need apt (fast, ~30 s).
+          npx playwright install --with-deps chromium
+
+      - name: Run the browser E2E suite
+        working-directory: e2e
+        run: npx playwright test
+
+      - name: Upload test artifacts (screenshots, traces, report)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: e2e/test-results/
+          retention-days: 7

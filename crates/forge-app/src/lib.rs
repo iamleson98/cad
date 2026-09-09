@@ -14,6 +14,8 @@
 
 pub mod app;
 pub mod background;
+#[cfg(any(test, debug_assertions))]
+pub mod bridge;
 pub mod crash;
 pub mod gizmo;
 pub mod icons;
@@ -22,6 +24,11 @@ pub mod picking;
 pub mod theme;
 pub mod ui;
 pub mod viewport;
+
+#[cfg(test)]
+pub mod harness;
+#[cfg(test)]
+pub mod ui_tests;
 
 /// Browser-only helpers (downloads, W-10).
 #[cfg(target_arch = "wasm32")]

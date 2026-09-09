@@ -123,12 +123,11 @@ fn axis_color(i: usize) -> egui::Color32 {
 
 /// Blend two colors (for plane handles: their two axes), semi-transparent.
 fn blend(a: egui::Color32, b: egui::Color32) -> egui::Color32 {
-    egui::Color32::from_rgba_unmultiplied(
-        (a.r() + b.r()) / 2,
-        (a.g() + b.g()) / 2,
-        (a.b() + b.b()) / 2,
-        150,
-    )
+    // u8 + u8 overflows for channels > 127 (X-red is 228): the panic
+    // killed the app every time a selection showed the gizmo plane
+    // handles (the "click something and it quits" bug). Widen first.
+    let ch = |x: u8, y: u8| ((x as u16 + y as u16) / 2) as u8;
+    egui::Color32::from_rgba_unmultiplied(ch(a.r(), b.r()), ch(a.g(), b.g()), ch(a.b(), b.b()), 150)
 }
 
 /// Snap `v` to a multiple of `step`.

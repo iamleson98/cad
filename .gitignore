@@ -2,3 +2,8 @@ target/
 *.forgecad
 crates/forge-app/dist/
 shots/
+
+# Browser E2E (Playwright) — dependencies and test output
+e2e/node_modules/
+e2e/test-results/
+e2e/*.png

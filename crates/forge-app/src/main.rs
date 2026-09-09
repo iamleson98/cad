@@ -15,6 +15,12 @@ fn main() {
     // Redirect `log` to console.log and friends:
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
 
+    // E2E bridge (debug builds only): exposes window.__forgecad (widget
+    // registry, state, heartbeat, errors, action queue) for the
+    // headless-browser test suite. Compiled out of release bundles.
+    #[cfg(debug_assertions)]
+    forge_app::bridge::install_js_bridge();
+
     let window = web_sys::window().expect("no browser window");
     let document = window.document().expect("no document");
     let canvas = document
@@ -22,7 +28,17 @@ fn main() {
         .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
         .unwrap_or_else(|| panic!("canvas #{CANVAS_ID} not found"));
 
-    let web_options = eframe::WebOptions::default();
+    let mut web_options = eframe::WebOptions::default();
+    // Debug (E2E) bundles force the WebGL2 backend: the Dawn software
+    // WebGPU adapter in headless Chromium loses the device under the
+    // multi-pass renderer (wgpu createBuffer panics), while SwiftShader
+    // WebGL2 is rock solid. Production keeps the default backend
+    // selection (WebGPU when available, WebGL2 otherwise).
+    #[cfg(debug_assertions)]
+    if let egui_wgpu::WgpuSetup::CreateNew(ref mut create_new) = web_options.wgpu_options.wgpu_setup
+    {
+        create_new.instance_descriptor.backends = wgpu::Backends::GL;
+    }
     wasm_bindgen_futures::spawn_local(async move {
         eframe::WebRunner::new()
             .start(

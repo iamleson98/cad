@@ -284,17 +284,17 @@ pub fn tool_button(
     selected: bool,
     enabled: bool,
 ) -> Response {
-    let id = ui.id().with(("tool_button", id));
+    let egui_id = ui.id().with(("tool_button", id));
 
     // Hover state from the previous frame drives the fade target —
     // the classic egui animation pattern.
     let was_hot = ui
         .ctx()
-        .data_mut(|d| d.get_temp::<bool>(id))
+        .data_mut(|d| d.get_temp::<bool>(egui_id))
         .unwrap_or(false);
     let t = ui
         .ctx()
-        .animate_value_with_time(id.with("anim"), f32::from(was_hot), 0.12);
+        .animate_value_with_time(egui_id.with("anim"), f32::from(was_hot), 0.12);
 
     let visuals = ui.visuals();
     let base = visuals.widgets.inactive.bg_fill;
@@ -353,7 +353,18 @@ pub fn tool_button(
         .min_size(egui::vec2(if label.is_some() { 0.0 } else { 30.0 }, 26.0));
     let response = ui.add_enabled(enabled, button);
 
-    ui.ctx().data_mut(|d| d.insert_temp(id, response.hovered()));
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui_id, response.hovered()));
+
+    // E2E bridge: register the widget (debug/test builds only).
+    #[cfg(any(test, debug_assertions))]
+    crate::bridge::record(
+        format!("tool:{id}"),
+        label.unwrap_or(id),
+        "button",
+        response.rect,
+        enabled,
+    );
 
     let (title, hint) = match tooltip.split_once('\n') {
         Some((t, rest)) => (t, rest.trim()),

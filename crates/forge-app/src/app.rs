@@ -128,6 +128,14 @@ pub struct ForgeApp {
     /// FPS estimate.
     /// Rolling frame-time samples (PR-05 status stats).
     pub frame_times: Vec<f32>,
+    /// Completed background evaluations (E2E assertions: the bridge
+    /// state snapshot exposes it as `evalDone`).
+    pub eval_done_count: u64,
+    /// Evaluation requests sent (E2E settle detection: the app is
+    /// settled when `eval_done_count == eval_sent_count`; the boolean
+    /// `eval_pending` is cleared by any response and misreports when
+    /// several requests are in flight).
+    pub eval_sent_count: u64,
 }
 
 impl ForgeApp {
@@ -198,6 +206,27 @@ impl ForgeApp {
             }
         }
 
+        Self::assemble(doc, status, renderer)
+    }
+
+    /// Headless construction for the E2E harness (`cargo test`): a
+    /// pristine document, no crash/autosave recovery (tests must be
+    /// deterministic regardless of machine state) and no GPU renderer
+    /// (the panels run against a bare egui context).
+    #[cfg(any(test, debug_assertions))]
+    pub fn new_headless() -> Self {
+        Self::assemble(
+            Document::new("untitled"),
+            String::from("Welcome to ForgeCAD — Ctrl+Shift+P for the command palette"),
+            None,
+        )
+    }
+
+    /// Shared constructor tail: everything that does not depend on the
+    /// eframe creation context.
+    fn assemble(doc: Document, status: String, renderer: Option<Arc<Mutex<Renderer>>>) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let autosave_path = default_autosave_path();
         #[cfg(not(target_arch = "wasm32"))]
         let tokio_rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -250,6 +279,8 @@ impl ForgeApp {
             import_rx,
             imported_paths: std::collections::HashSet::new(),
             frame_times: Vec::new(),
+            eval_done_count: 0,
+            eval_sent_count: 0,
         };
         app.request_evaluation();
         app
@@ -277,6 +308,7 @@ impl ForgeApp {
         let doc = self.doc.clone();
         if self.eval_worker.tx.send(EvalRequest::Evaluate(doc)).is_ok() {
             self.eval_pending = true;
+            self.eval_sent_count += 1;
         }
     }
 
@@ -286,6 +318,7 @@ impl ForgeApp {
             match response {
                 EvalResponse::Done(ev, duration) => {
                     self.eval_pending = false;
+                    self.eval_done_count += 1;
                     self.last_evaluation = Some(ev);
                     self.last_eval_duration = Some(duration);
                     self.measure_bvhs_stale = true;
@@ -599,6 +632,38 @@ impl ForgeApp {
         }
     }
 
+    /// Apply a queued E2E test action (see [`crate::bridge::queue_action`]).
+    /// Actions are drained at the top of [`Self::ui_body`] every frame.
+    #[cfg(any(test, debug_assertions))]
+    fn apply_test_action(&mut self, name: &str, payload: &str) {
+        match name {
+            // "import" with payload "<ext>:<file contents>" — the E2E
+            // replacement for a native file dialog / browser drop: feed
+            // mesh bytes straight into the I-01 import pipeline.
+            "import" => {
+                let (ext, bytes) = payload
+                    .split_once(':')
+                    .map(|(e, b)| (e.to_string(), b.as_bytes().to_vec()))
+                    .unwrap_or_default();
+                let format = forge_io::ImportFormat::from_extension(&ext);
+                let Some(format) = format else {
+                    self.set_status(format!("test import: unsupported .{ext}"));
+                    return;
+                };
+                match forge_io::import_meshes_bytes(format, &bytes) {
+                    Ok(meshes) => self.add_imported_meshes(
+                        &std::path::PathBuf::from(format!("test_import.{ext}")),
+                        meshes,
+                    ),
+                    Err(e) => self.set_status(format!("test import failed: {e}")),
+                }
+            }
+            // Smoke channel: prove the queue round-trips (harness test).
+            "status" => self.set_status(format!("action:{payload}")),
+            other => self.set_status(format!("unknown test action: {other}")),
+        }
+    }
+
     // ---- Measurement tool (W-08) ----------------------------------------
 
     /// Rebuild per-body BVHs after an evaluation change.
@@ -695,6 +760,34 @@ fn default_autosave_path() -> PathBuf {
 
 impl eframe::App for ForgeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.ui_body(ui);
+    }
+
+    fn on_exit(&mut self) {
+        // Final autosave on exit for crash resilience (native only).
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.doc.modified {
+            let _ = forge_io::save_document(&self.autosave_path, &self.doc);
+        }
+    }
+}
+
+impl ForgeApp {
+    /// The full per-frame body: input polling, panels, viewport, palette.
+    /// [`eframe::App::ui`] delegates here, and the headless E2E harness
+    /// (cargo test / debug bridge) drives the exact same code against a
+    /// bare `egui::Context` — one code path, tested two ways.
+    pub(crate) fn ui_body(&mut self, ui: &mut egui::Ui) {
+        // E2E bridge (debug/test builds only — compiled out of release):
+        // frame heartbeat + widget registry reset + queued test actions.
+        #[cfg(any(test, debug_assertions))]
+        {
+            crate::bridge::begin_frame();
+            for (name, payload) in crate::bridge::drain_actions() {
+                self.apply_test_action(&name, &payload);
+            }
+        }
+
         let ctx = ui.ctx().clone();
         // FPS estimate.
         let dt = ctx.input(|i| i.unstable_dt);
@@ -750,49 +843,65 @@ impl eframe::App for ForgeApp {
         }
 
         // Global shortcuts.
+        // Chord matching uses the per-EVENT modifiers, not the
+        // end-of-frame `i.modifiers` state: when a fast key chord
+        // (modifier downs + key + modifier ups) coalesces into a single
+        // frame — common in the browser and for fast typists — the
+        // tracked state is already back to default when the app reads
+        // it, and the shortcut is silently lost (the E2E suite caught
+        // this as a flaky Ctrl+Shift+P).
+        let chord = |i: &egui::InputState, key: egui::Key, ctrl: bool, shift: bool| {
+            i.events.iter().any(|e| match e {
+                egui::Event::Key {
+                    key: k,
+                    pressed: true,
+                    modifiers: m,
+                    ..
+                } => k == &key && m.ctrl == ctrl && m.shift == shift,
+                _ => false,
+            })
+        };
+        // Also `ctx.input` takes the context WRITE lock; calling
+        // `ctx.egui_wants_keyboard_input()` (a READ lock) inside the
+        // closure self-deadlocks — capture the flag BEFORE instead.
+        let wants_keyboard = ctx.egui_wants_keyboard_input();
         ctx.input(|i| {
-            let ctrl = i.modifiers.ctrl;
-            let shift = i.modifiers.shift;
-            if ctrl && shift && i.key_pressed(egui::Key::P) {
+            if chord(i, egui::Key::P, true, true) {
                 self.palette_open = !self.palette_open;
                 self.palette_query.clear();
                 self.palette_cursor = 0;
             }
-            if ctrl && !shift && i.key_pressed(egui::Key::Z) {
+            if chord(i, egui::Key::Z, true, false) {
                 PaletteAction::Undo.run(self);
             }
-            if (ctrl && i.key_pressed(egui::Key::Y))
-                || (ctrl && shift && i.key_pressed(egui::Key::Z))
-            {
+            if chord(i, egui::Key::Y, true, false) || chord(i, egui::Key::Z, true, true) {
                 PaletteAction::Redo.run(self);
             }
-            if ctrl && i.key_pressed(egui::Key::S) {
+            if chord(i, egui::Key::S, true, false) {
                 PaletteAction::SaveNative.run(self);
             }
-            if !ctrl {
-                if i.key_pressed(egui::Key::F) {
-                    self.camera.fit_to(&self.scene_bounds());
-                }
-                if i.key_pressed(egui::Key::P) {
-                    self.camera.orthographic = !self.camera.orthographic;
-                }
-                if i.key_pressed(egui::Key::G) {
-                    self.render_options.show_grid = !self.render_options.show_grid;
-                }
-                if i.key_pressed(egui::Key::E) {
-                    self.render_options.show_edges = !self.render_options.show_edges;
-                    self.scene.show_edges = self.render_options.show_edges;
-                    self.scene.version += 1;
-                }
-                // W-01 gizmo mode shortcuts (not while typing in a field).
-                if i.key_pressed(egui::Key::T) && !ctx.egui_wants_keyboard_input() {
-                    self.gizmo_mode = GizmoMode::Translate;
-                    self.set_status("Gizmo: translate (T) — grab an axis arrow or plane");
-                }
-                if i.key_pressed(egui::Key::R) && !ctx.egui_wants_keyboard_input() {
-                    self.gizmo_mode = GizmoMode::Rotate;
-                    self.set_status("Gizmo: rotate (R) — grab a ring");
-                }
+            if chord(i, egui::Key::F, false, false) {
+                self.camera.fit_to(&self.scene_bounds());
+            }
+            if chord(i, egui::Key::P, false, false) {
+                self.camera.orthographic = !self.camera.orthographic;
+            }
+            if chord(i, egui::Key::G, false, false) {
+                self.render_options.show_grid = !self.render_options.show_grid;
+            }
+            if chord(i, egui::Key::E, false, false) {
+                self.render_options.show_edges = !self.render_options.show_edges;
+                self.scene.show_edges = self.render_options.show_edges;
+                self.scene.version += 1;
+            }
+            // W-01 gizmo mode shortcuts (not while typing in a field).
+            if chord(i, egui::Key::T, false, false) && !wants_keyboard {
+                self.gizmo_mode = GizmoMode::Translate;
+                self.set_status("Gizmo: translate (T) — grab an axis arrow or plane");
+            }
+            if chord(i, egui::Key::R, false, false) && !wants_keyboard {
+                self.gizmo_mode = GizmoMode::Rotate;
+                self.set_status("Gizmo: rotate (R) — grab a ring");
             }
         });
 
@@ -828,11 +937,21 @@ impl eframe::App for ForgeApp {
             .default_size(230.0)
             .resizable(true)
             .show(ui, |ui| {
-                ui::tree_panel(ui, self);
-                // P-01: the parameter table shares the left panel.
-                ui.add_space(8.0);
-                ui.separator();
-                ui::params_panel(ui, self);
+                // One shared scroll area for the whole left panel (tree +
+                // params): everything stays reachable by scrolling, the
+                // parameter panel no longer gets pushed off-screen by the
+                // feature tree (E2E regression: the Add-parameter button
+                // sat at y=972 on a 900 px screen).
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_min_height(ui.available_height());
+                        ui::tree_panel(ui, self);
+                        // P-01: the parameter table shares the left panel.
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui::params_panel(ui, self);
+                    });
             });
         egui::Panel::right("inspector")
             .default_size(260.0)
@@ -858,13 +977,9 @@ impl eframe::App for ForgeApp {
         if !ctx.input(|i| i.pointer.primary_down()) {
             self.gizmo_press_on_handle = false;
         }
-    }
 
-    fn on_exit(&mut self) {
-        // Final autosave on exit for crash resilience (native only).
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.doc.modified {
-            let _ = forge_io::save_document(&self.autosave_path, &self.doc);
-        }
+        // E2E bridge: publish the state snapshot for this frame.
+        #[cfg(any(test, debug_assertions))]
+        crate::bridge::publish_state(self);
     }
 }

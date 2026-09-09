@@ -1,0 +1,14 @@
+{
+  "name": "forgecad-e2e",
+  "private": true,
+  "description": "ForgeCAD browser E2E suite: drives the real wasm app (trunk debug bundle) in headless Chromium through the in-app test bridge (window.__forgecad).",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "serve": "node serve.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62"
+  }
+}

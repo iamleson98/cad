@@ -292,6 +292,57 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       download; mesh import works via drag-and-drop. CI gained a
       dedicated wasm job (check + clippy + trunk bundle).*
 
+- [x] **W-11 Intensive E2E test harness (native + browser)** `(M)` `P0`
+      Every button, menu, tool and feature exercised by real input
+      events: a headless Rust harness in `cargo test` (all 3 OS) plus
+      Playwright + headless Chromium driving the actual wasm app in
+      CI. The regression net for a fast-evolving app.
+      *Done — two layers, one code path:
+      (1) **In-app E2E bridge** (`forge-app/src/bridge.rs`, compiled
+      into debug/test builds only, zero overhead in release): a
+      per-frame widget registry (id/label/rect/enabled of every
+      interactive widget), an app-state JSON snapshot, a frame
+      heartbeat, a panic/error registry and an action queue
+      (`window.__forgecad.action(...)`) that drives features needing
+      file bytes (imports) without a file dialog.
+      (2) **Native harness** (`harness.rs` + `ui_tests.rs`): the REAL
+      `ui_body` (the exact code the desktop app runs) against a bare
+      `egui::Context`, driven by synthetic pointer/keyboard events at
+      real widget rects — 43 tests: boot/layout, every toolbar button
+      incl. empty-scene edge cases, every Solid primitive, tree
+      select/suppress/delete, inspector apply, sketch→solve→extrude,
+      palette (keyboard + click), booleans, measure (2 picks, empty
+      click), section toggle/flip, camera orbit/zoom/nav-cube, gizmo
+      drags, params, undo/redo cycles, save, import (bridge action),
+      rapid-interaction soak. Runs in ~1.3 s.
+      (3) **Browser suite** (`e2e/`, Playwright 1.62 + headless
+      Chromium): 22 tests mirroring the native flows against the trunk
+      DEBUG wasm bundle (bridge active via `debug_assertions`),
+      plus browser-specific coverage: export/save DOWNLOADS, bridge
+      import, garbage-import robustness, screenshots for visual
+      inspection. WebGL2 is forced in debug builds (Dawn software
+      WebGPU loses the device under the multi-pass renderer;
+      SwiftShader GL is stable) — production keeps WebGPU.
+      CI: new `e2e` job (debug trunk build — no wasm-opt, fast —
+      cached rust artifacts + cached Playwright browsers + apt deps;
+      artifacts uploaded on failure).
+      **Bugs the harness caught and fixed on day one:**
+      - gizmo.rs u8 color-blend overflow — panicked (app quit) every
+        time a selection showed the gizmo plane handles;
+      - T/R shortcut self-deadlock — `ctx.egui_wants_keyboard_input`
+        (read lock) called inside `ctx.input` (write lock) froze and
+        killed the app;
+      - params panel pushed off-screen by the tree's full-height
+        ScrollArea (P-01 unreachable on default windows);
+      - renderer-mutex poison cascade on viewport picks (a first
+        panic turned every later click fatal);
+      - STL triangle-count multiplication overflow on wasm32 (32-bit
+        usize) crashing browser imports;
+      - key-chord coalescing race — fast Ctrl+Shift+P could lose the
+        modifiers and silently not open the palette (now matched per
+        event).*
+
+
 ## Wave 4 — Interoperability
 
 - [x] **I-01 STL/OBJ import as mesh bodies** `(S)` `P1`
