@@ -82,7 +82,6 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
             ] {
                 let dims = forge_core::Vector3::new(dims[0], dims[1], dims[2]);
                 let response = ui.button(icons::icon_label(icon, &kind.to_string()));
-                #[cfg(any(test, debug_assertions))]
                 crate::bridge::record(
                     format!("solid:{kind}"),
                     kind.to_string(),
@@ -97,7 +96,6 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
         });
         // E2E bridge: the Solid menu trigger (menu_button returns the
         // trigger's response — record its exact rect).
-        #[cfg(any(test, debug_assertions))]
         crate::bridge::record(
             "menu:Solid",
             "Solid",
@@ -428,7 +426,6 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
             }
         });
         // E2E bridge: the Export menu trigger.
-        #[cfg(any(test, debug_assertions))]
         crate::bridge::record(
             "menu:Export",
             "Export",
@@ -656,7 +653,6 @@ pub fn tree_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
                         }
 
                         let response = ui.selectable_label(selected, job);
-                        #[cfg(any(test, debug_assertions))]
                         crate::bridge::record(
                             format!("tree:{label}"),
                             label.clone(),
@@ -696,7 +692,6 @@ pub fn tree_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
                                 } else {
                                     "Suppress feature"
                                 });
-                            #[cfg(any(test, debug_assertions))]
                             crate::bridge::record(
                                 format!("tree:{label}:suppress"),
                                 "Suppress",
@@ -752,7 +747,6 @@ pub fn tree_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
 fn feature_row_menu(ui: &mut egui::Ui, app: &mut ForgeApp, id: forge_core::FeatureId) {
     use crate::icons;
     let edit = ui.button(icons::icon_label(icons::EYE, "Edit in inspector"));
-    #[cfg(any(test, debug_assertions))]
     crate::bridge::record(
         "rowmenu:edit",
         "Edit in inspector",
@@ -768,7 +762,6 @@ fn feature_row_menu(ui: &mut egui::Ui, app: &mut ForgeApp, id: forge_core::Featu
         ui.close();
     }
     let suppress = ui.button(icons::icon_label(icons::EYE_OFF, "Suppress / unsuppress"));
-    #[cfg(any(test, debug_assertions))]
     crate::bridge::record(
         "rowmenu:suppress",
         "Suppress / unsuppress",
@@ -785,7 +778,6 @@ fn feature_row_menu(ui: &mut egui::Ui, app: &mut ForgeApp, id: forge_core::Featu
         ui.close();
     }
     let delete = ui.button(icons::icon_label(icons::DELETE, "Delete"));
-    #[cfg(any(test, debug_assertions))]
     crate::bridge::record(
         "rowmenu:delete",
         "Delete",
@@ -1769,7 +1761,6 @@ pub fn palette_overlay(ctx: &egui::Context, app: &mut ForgeApp) {
                         let is_cursor = row == app.palette_cursor;
                         let response =
                             ui.selectable_label(is_cursor, icons::icon_label(*icon, label));
-                        #[cfg(any(test, debug_assertions))]
                         crate::bridge::record(
                             format!("palette:{label}"),
                             *label,

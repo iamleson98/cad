@@ -14,7 +14,6 @@
 
 pub mod app;
 pub mod background;
-#[cfg(any(test, debug_assertions))]
 pub mod bridge;
 pub mod crash;
 pub mod gizmo;

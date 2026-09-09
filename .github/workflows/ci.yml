@@ -80,6 +80,14 @@ jobs:
       - name: Tests (unit + doc)
         run: cargo test --workspace --locked
 
+      # Release-profile compile guard (ubuntu only): cfg-gated code
+      # (e.g. the E2E bridge, debug_assertions paths) must not break
+      # `cargo build --release` — what desktop users ship. Wasm release
+      # is covered by the `wasm` job's trunk bundle.
+      - name: Release-profile check (native)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check --workspace --locked --release
+
   # W-10: the wasm32 browser build. Compiles the whole workspace for
   # wasm32-unknown-unknown (zero warnings) and builds the trunk bundle
   # (wasm-bindgen + wasm-opt) that `crates/forge-app/dist` mirrors.

@@ -73,7 +73,6 @@ pub fn viewport_ui(ui: &mut egui::Ui, app: &mut ForgeApp) {
 
     // E2E bridge: the viewport itself is a clickable region (selection,
     // measure picks, gizmo drags) — tests click at its rect.
-    #[cfg(any(test, debug_assertions))]
     crate::bridge::record("viewport", "3D viewport", "viewport", rect, true);
 
     let pixels_per_point = ui.ctx().pixels_per_point();

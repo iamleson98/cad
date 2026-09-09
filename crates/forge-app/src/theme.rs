@@ -357,7 +357,6 @@ pub fn tool_button(
         .data_mut(|d| d.insert_temp(egui_id, response.hovered()));
 
     // E2E bridge: register the widget (debug/test builds only).
-    #[cfg(any(test, debug_assertions))]
     crate::bridge::record(
         format!("tool:{id}"),
         label.unwrap_or(id),

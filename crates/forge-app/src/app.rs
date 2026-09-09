@@ -633,8 +633,9 @@ impl ForgeApp {
     }
 
     /// Apply a queued E2E test action (see [`crate::bridge::queue_action`]).
-    /// Actions are drained at the top of [`Self::ui_body`] every frame.
-    #[cfg(any(test, debug_assertions))]
+    /// Actions are drained at the top of [`Self::ui_body`] every frame;
+    /// the queue is only ever filled in debug/test builds (the release
+    /// drain is a no-op returning nothing).
     fn apply_test_action(&mut self, name: &str, payload: &str) {
         match name {
             // "import" with payload "<ext>:<file contents>" — the E2E
@@ -780,12 +781,9 @@ impl ForgeApp {
     pub(crate) fn ui_body(&mut self, ui: &mut egui::Ui) {
         // E2E bridge (debug/test builds only — compiled out of release):
         // frame heartbeat + widget registry reset + queued test actions.
-        #[cfg(any(test, debug_assertions))]
-        {
-            crate::bridge::begin_frame();
-            for (name, payload) in crate::bridge::drain_actions() {
-                self.apply_test_action(&name, &payload);
-            }
+        crate::bridge::begin_frame();
+        for (name, payload) in crate::bridge::drain_actions() {
+            self.apply_test_action(&name, &payload);
         }
 
         let ctx = ui.ctx().clone();
@@ -979,7 +977,6 @@ impl ForgeApp {
         }
 
         // E2E bridge: publish the state snapshot for this frame.
-        #[cfg(any(test, debug_assertions))]
         crate::bridge::publish_state(self);
     }
 }
