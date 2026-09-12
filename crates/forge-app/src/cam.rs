@@ -5,12 +5,16 @@
 use forge_cam::path::{Feeds, Toolpath};
 use forge_cam::post::{self, PostOptions};
 use forge_cam::setup::{Setup, Stock};
+use forge_cam::sim::{MaterialSim, SimReport};
 use forge_cam::strategy::{self, Hole, RoughParams, WaterlineParams};
 use forge_cam::tool::{Tool, ToolLibrary};
 use forge_geometry::TriMesh;
 use forge_model::{Document, Evaluation, Feature};
 use forge_render::{OverlayLines, Scene};
 use serde::{Deserialize, Serialize};
+
+/// Sentinel body id for the remaining-stock ghost (never a real body).
+pub const SIM_BODY_ID: u64 = 0x51F1_510C;
 
 /// Strategy kinds surfaced in the CAM panel (Inventor-CAM equivalents).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +142,15 @@ pub struct CamState {
     /// Cached G-code of the last export (not serialized).
     #[serde(skip)]
     pub gcode: Option<String>,
+    /// Material-removal simulation of the last compute (C-05).
+    #[serde(skip)]
+    pub sim: Option<MaterialSim>,
+    /// Render the remaining-stock mesh in the viewport.
+    #[serde(default)]
+    pub show_sim: bool,
+    /// Report of the last simulation.
+    #[serde(skip)]
+    pub sim_report: Option<SimReport>,
 }
 
 fn default_true() -> bool {
@@ -159,6 +172,9 @@ impl Default for CamState {
             last_status: None,
             last_stock: None,
             gcode: None,
+            sim: None,
+            show_sim: false,
+            sim_report: None,
         }
     }
 }
@@ -331,6 +347,52 @@ impl CamState {
         status
     }
 
+    /// Run the material-removal simulation over every computed op (C-05).
+    pub fn simulate(&mut self, ev: &Evaluation) -> String {
+        let Some(stock) = self.last_stock.clone() else {
+            self.sim_report = None;
+            return "CAM sim: compute toolpaths first".into();
+        };
+        let part = Self::part_mesh(ev);
+        // Part field for gouge detection: raw rasterization, no dilation.
+        let res = (stock.width() / 400.0).clamp(0.2, 1.0);
+        let nx = ((stock.width() / res).ceil() as usize).clamp(2, 1000);
+        let ny = ((stock.depth() / res).ceil() as usize).clamp(2, 1000);
+        let part_field = forge_cam::HeightField::rasterize(
+            &part,
+            stock.min[0] + res * 0.5,
+            stock.min[1] + res * 0.5,
+            nx,
+            ny,
+            res,
+            stock.bottom(),
+        );
+        let sim_res = res.max(0.4);
+        let mut sim = MaterialSim::new(&stock, sim_res).with_part(part_field);
+        let mut ops = 0;
+        for op in &self.ops {
+            if let (true, Some(path)) = (op.enabled, &op.result) {
+                let tool = self
+                    .library
+                    .get(op.tool_id)
+                    .cloned()
+                    .unwrap_or_else(|| Tool::presets()[0].clone());
+                sim.apply(path, &tool);
+                ops += 1;
+            }
+        }
+        let report = sim.report();
+        let status = format!(
+            "CAM sim: {ops} ops — {:.1}% stock removed ({:.0} mm3), {} gouge cells",
+            report.removed_pct * 100.0,
+            report.removed_volume,
+            report.gouges
+        );
+        self.sim = Some(sim);
+        self.sim_report = Some(report);
+        status
+    }
+
     /// G-code for all computed ops (cached).
     pub fn gcode(&mut self) -> Option<String> {
         if self.gcode.is_some() {
@@ -399,6 +461,16 @@ impl CamState {
         self.gcode = None;
         self.last_stock = None;
         self.last_status = None;
+        self.sim = None;
+        self.sim_report = None;
+    }
+
+    /// Render mesh of the remaining stock (if simulated & shown).
+    pub fn sim_mesh(&self) -> Option<forge_geometry::TriMesh> {
+        if !self.show_sim {
+            return None;
+        }
+        self.sim.as_ref().map(|s| s.stock_mesh())
     }
 }
 

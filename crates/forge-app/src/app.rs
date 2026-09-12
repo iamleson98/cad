@@ -348,7 +348,7 @@ impl ForgeApp {
     }
 
     /// Rebuild the render scene from the last evaluation.
-    fn rebuild_scene(&mut self) {
+    pub(crate) fn rebuild_scene(&mut self) {
         let mut bodies = Vec::new();
         if let Some(ev) = &self.last_evaluation {
             for b in &ev.bodies {
@@ -359,6 +359,22 @@ impl ForgeApp {
                     style: forge_render::BodyStyle {
                         color: self.body_color(b.source),
                         transparent: false,
+                    },
+                });
+            }
+        }
+        // C-05: the remaining-stock ghost renders as a translucent body
+        // (sentinel id — never in the feature tree, so selection just
+        // reports an unlabeled body).
+        if let Some(mesh) = self.cam.sim_mesh() {
+            if mesh.tri_count() > 0 {
+                bodies.push(SceneBody {
+                    id: forge_core::BodyId::new(crate::cam::SIM_BODY_ID),
+                    name: "CAM remaining stock".into(),
+                    mesh,
+                    style: forge_render::BodyStyle {
+                        color: forge_render::Scene::GLASS_SIM,
+                        transparent: true,
                     },
                 });
             }
@@ -435,6 +451,17 @@ impl ForgeApp {
         let status = self.cam.compute(&self.doc, &ev);
         self.cam.build_overlays(&mut self.scene);
         self.set_status(status);
+    }
+
+    /// Run the CAM material-removal simulation (C-05).
+    pub fn cam_simulate(&mut self) {
+        let Some(ev) = self.last_evaluation.clone() else {
+            self.set_status("CAM sim: evaluate a model first");
+            return;
+        };
+        let status = self.cam.simulate(&ev);
+        self.set_status(status);
+        self.rebuild_scene();
     }
 
     /// Export the CAM G-code (C-02): native writes a `.nc` file, wasm

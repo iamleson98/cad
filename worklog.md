@@ -67,3 +67,21 @@ Stage Summary:
 - Deliverables: full CAM core (C-01), G-code post (C-02), CAM UI dock (C-03), toolpath visualization overlays (C-04), hole recognition (C-06) — the "beat Inventor CAD/CAM" differentiator now exists end-to-end in-process: model → strategies → visible toolpaths → .nc program, all CI-scriptable.
 - Key insight: the mesh kernel is a CAM asset, not a liability — heightfield CAM over concatenated body meshes is exact, robust, and needs no B-Rep.
 - Next: C-05 material-removal simulation (drives tool animation), then K-03 fillet/chamfer + F-05 shell (part-modeling gaps), then push CI watch loop.
+
+---
+Task ID: 4
+Agent: main (Super Z)
+Task: C-05 material-removal simulation: stock grid, per-move removal, gouge detection, viewport ghost, E2E; verify CI green for the CAM push.
+
+Work Log:
+- forge-cam/src/sim.rs: MaterialSim (height grid @ stock top; flat-disc/ball-sphere stamps swept along segments with Z interpolation — ramps and plunges exact; drill cycles stamp columns; rapids remove nothing AND reset the prev-point so plunges never sweep phantom cuts), SimReport (volume/percent/gouges with grid-resampled part comparison + sub-cell tolerance), stepped stock mesh export.
+- Simulator found 2 real bugs (exactly its purpose): CL-field dilation under-covered the true tool footprint by up to half a grid cell → strategy cl_field now dilates by radius + cell/2 (conservative); the sim's own apply() swept from the last cut point after rapids — fixed with prev=None on Rapid.
+- App: cam_simulate(), remaining-stock ghost body (sentinel SIM_BODY_ID, translucent GLASS_SIM) in rebuild_scene, "Simulate" button, "stock sim" toggle (rebuilds the scene on change), sim report badge (green 0 gouges / amber N).
+- E2E: cam_simulate_reports_and_renders_stock (report + ghost body + toggle), cam_simulate_without_compute_is_a_clean_noop.
+- Full verification: fmt clean; clippy -D warnings clean native (dev, release, all-targets) + wasm32; 259 workspace tests / 18 suites green.
+- CI for the CAM push 2c32650: ALL 6 JOBS GREEN (rustfmt, 3-OS test matrix, wasm32 trunk bundle, browser e2e 22 specs).
+
+Stage Summary:
+- The CAM loop is now closed end-to-end: model → strategies → toolpaths (visible) → simulation (verified gouge-free, % removed) → G-code (.nc), with the browser E2E guarding every button.
+- The simulator doubles as a toolpath verifier in CI (zero-gouge assertion on roughing) — the beginning of the "trustworthy CAM" story.
+- Next: K-03 fillet/chamfer + F-05 shell (part modeling gaps Inventor users expect), then browser-side e2e specs for CAM flows, then A-01 multi-body.

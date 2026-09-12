@@ -931,3 +931,69 @@ fn cam_display_toggles_change_overlays() {
 fn debug_add_box(h: &mut Harness) {
     add_solid(h, PrimitiveKind::Box);
 }
+
+// ---------------------------------------------------------------------------
+// CAM simulation (C-05) — volumes, gouges, remaining-stock ghost
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cam_simulate_reports_and_renders_stock() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Box);
+    assert!(h.wait_for_eval(2000));
+    h.click("tool:cam");
+    h.click_label("+ Rough");
+    h.click_label("Compute");
+    h.frames(3);
+    assert!(h.app.cam.ops[0].result.is_some());
+
+    // Simulate: report lands, zero gouges (toolpaths are gouge-free).
+    h.click_label("Simulate");
+    h.frames(3);
+    let rep = h.app.cam.sim_report.as_ref().expect("sim report");
+    assert!(rep.removed_pct > 0.0, "{rep:?}");
+    assert!(rep.removed_pct < 1.0, "{rep:?}");
+    assert_eq!(rep.gouges, 0, "roughing gouged: {rep:?}");
+    assert!(h.app.cam.sim.is_some());
+
+    // Show the remaining stock → ghost body in the scene.
+    h.click_label("stock sim");
+    h.frames(2);
+    assert!(h.app.cam.show_sim);
+    assert!(
+        h.app
+            .scene
+            .bodies
+            .iter()
+            .any(|b| b.id.raw() == crate::cam::SIM_BODY_ID),
+        "no sim ghost body in the scene"
+    );
+    let sim_body = h
+        .app
+        .scene
+        .bodies
+        .iter()
+        .find(|b| b.id.raw() == crate::cam::SIM_BODY_ID)
+        .unwrap();
+    assert!(sim_body.mesh.tri_count() > 50);
+    // Toggle off → body disappears on the next scene rebuild.
+    h.click_label("stock sim");
+    h.frames(2);
+    assert!(!h.app.cam.show_sim);
+    assert_no_bridge_errors();
+}
+
+#[test]
+fn cam_simulate_without_compute_is_a_clean_noop() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Box);
+    assert!(h.wait_for_eval(2000));
+    h.click("tool:cam");
+    h.click_label("Simulate");
+    h.frames(2);
+    assert!(h.app.cam.sim_report.is_none());
+    assert!(h.app.status.contains("compute toolpaths first"));
+    assert_no_bridge_errors();
+}

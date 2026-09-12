@@ -17,7 +17,8 @@
 //!   finishing, drilling (peck cycles), all with gouge-safe stay-down
 //!   links verified on the CL field,
 //! - [`path`] — the toolpath IR (rapid/feed/plunge/drill moves + stats),
-//! - [`post`] — Fanuc-style 3-axis G-code post-processor.
+//! - [`post`] — Fanuc-style 3-axis G-code post-processor,
+//! - [`sim`] — stock material-removal simulation (volumes, gouges, mesh).
 //!
 //! Design constraints honored throughout:
 //! - **No UI dependencies** — the whole crate runs headless in `cargo test`
@@ -55,6 +56,7 @@ pub mod field;
 pub mod path;
 pub mod post;
 pub mod setup;
+pub mod sim;
 pub mod strategy;
 pub mod tool;
 

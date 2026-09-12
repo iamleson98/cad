@@ -142,9 +142,16 @@ fn cl_field(
     for h in lifted.heights.iter_mut() {
         *h = h.map(|z| z + leave);
     }
+    // Conservative dilation: the grid samples the disc footprint at cell
+    // centers, which under-covers the true tool disc by up to half a
+    // cell (obstacles in a cell whose center sits just outside the
+    // radius). Dilating by radius + half-cell guarantees the CL field
+    // covers the real footprint — the simulator (exact disc stamping)
+    // then verifies zero gouges.
+    let r_eff = tool.radius() + res * 0.5;
     match tool.kind {
-        crate::tool::ToolKind::Ball => lifted.dilate_ball(tool.radius()),
-        _ => lifted.dilate_flat(tool.radius()),
+        crate::tool::ToolKind::Ball => lifted.dilate_ball(r_eff),
+        _ => lifted.dilate_flat(r_eff),
     }
 }
 

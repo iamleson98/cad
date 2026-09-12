@@ -102,4 +102,6 @@ impl Scene {
     pub const CAM_RAPID: [f32; 4] = [0.95, 0.66, 0.19, 0.55];
     /// CAM stock-ghost color.
     pub const CAM_STOCK: [f32; 4] = [0.85, 0.88, 0.95, 0.12];
+    /// CAM remaining-stock simulation color (C-05).
+    pub const GLASS_SIM: [f32; 4] = [0.55, 0.78, 0.62, 0.30];
 }

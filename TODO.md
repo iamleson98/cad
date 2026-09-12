@@ -460,10 +460,23 @@ integration. Naming: `C-xx`.
       as a 12-edge box; per-op visibility = suppress; version bump only
       on change. Tool-position play/step animation folded into C-05
       (simulation will drive it).*
-- [ ] **C-05 Stock & material removal simulation** `(M)` `P2`
+- [x] **C-05 Stock & material removal simulation** `(M)` `P2`
       Heightfield (2.5D) material grid updated per move → voxel-ish color
       map of remaining stock, "in-process" part comparison, cut-vs-gouge
       report. This is what makes CAM feel trustworthy.
+      *Done: `forge-cam::sim` — `MaterialSim` height grid initialized to
+      the stock top, per-move tool stamps (flat disc / ball sphere along
+      swept segments incl. ramps & plunges; drill columns; rapids cut
+      nothing and correctly sever cut-link state), volume + percent
+      removed, gouge detection against the raw part field with sub-cell
+      tolerance, remaining-stock mesh export. App: Simulate button +
+      report badge (green/amber) + translucent ghost body in the viewport
+      ("stock sim" toggle). Two solver bugs found by the simulator:
+      (1) CL-field dilation under-covered the true tool disc by half a
+      cell → now dilates conservatively by radius + cell/2; (2) the sim
+      itself swept phantom cuts across parts after rapids (prev-point
+      not reset). Both fixed + regression tests. 8 sim unit tests + 2
+      E2E.*
 - [x] **C-06 Hole feature recognition → drill ops** `(S)` `P2`
       Detect `Feature::Hole` placements (already parametric!) and
       auto-generate peck-drill operations with cycle depths from the

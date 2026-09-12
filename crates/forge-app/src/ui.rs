@@ -1846,6 +1846,15 @@ pub fn cam_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
                     {
                         app.cam_export_gcode();
                     }
+                    if crate::bridge::button(ui, "Simulate")
+                        .on_hover_text(
+                            "Material-removal simulation of every computed operation \
+                             (volumes + gouge check)",
+                        )
+                        .clicked()
+                    {
+                        app.cam_simulate();
+                    }
                     if crate::bridge::button(ui, "Compute")
                         .on_hover_text("Run every enabled operation against the current model")
                         .clicked()
@@ -2003,12 +2012,18 @@ pub fn cam_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
             ui.add_space(4.0);
             ui.separator();
 
+            let sim_shown_before = app.cam.show_sim;
             ui.horizontal(|ui| {
                 ui.label(theme::semibold("Display").size(12.0));
                 crate::bridge::checkbox(ui, &mut app.cam.show_stock, "stock");
                 crate::bridge::checkbox(ui, &mut app.cam.show_toolpaths, "paths");
                 crate::bridge::checkbox(ui, &mut app.cam.show_rapids, "rapids");
+                crate::bridge::checkbox(ui, &mut app.cam.show_sim, "stock sim");
             });
+            // The sim ghost is a scene body: toggle → rebuild.
+            if app.cam.show_sim != sim_shown_before {
+                app.rebuild_scene();
+            }
             egui::Grid::new("cam-stock-grid")
                 .num_columns(2)
                 .spacing([10.0, 4.0])
@@ -2182,6 +2197,22 @@ pub fn cam_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
             if let Some(status) = &app.cam.last_status {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(status).size(11.5).weak());
+            }
+            if let Some(rep) = &app.cam.sim_report {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} {:.1}% removed · {} gouge cells",
+                        if rep.gouges == 0 { icons::CHECK } else { icons::ALERT },
+                        rep.removed_pct * 100.0,
+                        rep.gouges
+                    ))
+                    .size(11.0)
+                    .color(if rep.gouges == 0 {
+                        egui::Color32::from_rgb(110, 200, 130)
+                    } else {
+                        egui::Color32::from_rgb(220, 170, 80)
+                    }),
+                );
             }
         });
 }
