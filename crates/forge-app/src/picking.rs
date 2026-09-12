@@ -42,9 +42,9 @@ const PICK_RADIUS: f32 = 10.0;
 /// Coplanar clustering tolerance (radians).
 const FACE_TOL: f64 = 1.0_f64.to_radians();
 /// Dihedral threshold for sharp edges (radians).
-const EDGE_TOL: f64 = 45.0_f64.to_radians();
+pub(crate) const EDGE_TOL: f64 = 45.0_f64.to_radians();
 /// Tangent chaining tolerance (radians).
-const CHAIN_TOL: f64 = 30.0_f64.to_radians();
+pub(crate) const CHAIN_TOL: f64 = 30.0_f64.to_radians();
 
 /// Canonical id of an edge chain: its smallest vertex index.
 fn chain_id(chain: &[[u32; 2]]) -> u64 {

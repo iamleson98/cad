@@ -338,7 +338,7 @@ impl TriMesh {
 
     /// Map undirected edge -> adjacent triangle indices (shared by the
     /// edge-query methods).
-    fn edge_triangle_map(&self) -> HashMap<(u32, u32), Vec<usize>> {
+    pub fn edge_triangle_map(&self) -> HashMap<(u32, u32), Vec<usize>> {
         let mut edge_tris: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
         for t in 0..self.tri_count() {
             let [a, b, c] = self.triangle_idx(t);

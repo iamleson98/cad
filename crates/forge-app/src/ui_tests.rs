@@ -62,6 +62,7 @@ fn boot_layout_registers_core_toolbar() {
         "tool:palette",
         "menu:Solid",
         "menu:Export",
+        "menu:Modify",
         "viewport",
     ];
     for id in expected {
@@ -995,5 +996,107 @@ fn cam_simulate_without_compute_is_a_clean_noop() {
     h.frames(2);
     assert!(h.app.cam.sim_report.is_none());
     assert!(h.app.status.contains("compute toolpaths first"));
+    assert_no_bridge_errors();
+}
+
+// ---------------------------------------------------------------------------
+// K-03: chamfer / fillet edge details
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chamfer_fillet_flow_from_edge_selection() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Box);
+    assert!(h.wait_for_eval(2000));
+    assert_eq!(body_count(&h), 1);
+    let v0 = h.app.last_evaluation.as_ref().unwrap().bodies[0]
+        .mesh
+        .volume_signed();
+
+    // Simulate an edge selection: recompute the chains of the body and
+    // select one (the app resolves chain ids from mesh topology).
+    {
+        let ev = h.app.last_evaluation.clone().unwrap();
+        let body = &ev.bodies[0];
+        let chains = body
+            .mesh
+            .sharp_edge_chains(crate::picking::EDGE_TOL, crate::picking::CHAIN_TOL);
+        assert!(!chains.is_empty(), "a box has sharp edge chains");
+        let cid = chains[0]
+            .iter()
+            .flat_map(|e| e.iter())
+            .copied()
+            .map(u64::from)
+            .min()
+            .unwrap();
+        h.app.selection.select(forge_model::SelectionItem::Edge {
+            body: body.id,
+            edge: forge_core::EdgeId::new(cid),
+        });
+    }
+
+    // Empty-selection path is guarded: with an edge selected, the
+    // chamfer feature lands and evaluates.
+    h.app.apply_edge_detail(crate::palette::DetailKind::Chamfer);
+    h.frames(2);
+    assert!(h.wait_for_eval(3000));
+    assert_eq!(body_count(&h), 1, "chamfer modifies the body in place");
+    let v1 = h.app.last_evaluation.as_ref().unwrap().bodies[0]
+        .mesh
+        .volume_signed();
+    assert!(v1 < v0 - 0.5, "chamfer must remove material: {v0} → {v1}");
+    // The picked chain spans the three edges meeting at a corner
+    // (40+30+20 mm): −0.5·1·1·90 = −45, minus the triple-chamfered
+    // corner overlap.
+    assert!((v0 - v1 - 45.0).abs() < 1.5, "delta {}", v0 - v1);
+
+    // Undo the chamfer (command stack).
+    h.ctrl(Key::Z);
+    h.frames(2);
+    assert!(h.wait_for_eval(2000));
+    let v2 = h.app.last_evaluation.as_ref().unwrap().bodies[0]
+        .mesh
+        .volume_signed();
+    assert!(
+        (v2 - v0).abs() < 1e-6,
+        "undo restores the box: {v2} vs {v0}"
+    );
+    assert_no_bridge_errors();
+}
+
+#[test]
+fn chamfer_fillet_without_selection_is_a_clean_noop() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Box);
+    assert!(h.wait_for_eval(2000));
+    h.app.apply_edge_detail(crate::palette::DetailKind::Chamfer);
+    h.frames(1);
+    assert!(h.app.status.contains("Pick edges first"));
+    h.app.apply_edge_detail(crate::palette::DetailKind::Fillet);
+    h.frames(1);
+    assert!(h.app.status.contains("Pick edges first"));
+    assert_eq!(h.app.doc.tree.len(), 1, "no feature was added");
+    assert_no_bridge_errors();
+}
+
+#[test]
+fn modify_menu_chamfer_button_reachable() {
+    let _s = serial();
+    let mut h = Harness::new();
+    // Toolbar registers the Modify menu; the menu button itself is a
+    // plain egui menu (its children register when open).
+    assert!(h.has_widget("menu:Solid"));
+    h.click("menu:Modify");
+    h.frames(2);
+    assert!(
+        h.has_widget("btn:Chamfer selected edges") || {
+            // Menu ids record as `btn:<label>`; verify the label resolves.
+            h.widget_label("Chamfer selected edges")
+                .id
+                .starts_with("btn:")
+        }
+    );
     assert_no_bridge_errors();
 }

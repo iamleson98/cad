@@ -86,6 +86,10 @@ pub enum DimField {
     MirrorOffset,
     /// `PrimitiveParams::dims.x`.
     PrimitiveDimA,
+    /// `ChamferParams::distance`.
+    ChamferDistance,
+    /// `FilletParams::radius`.
+    FilletRadius,
 }
 
 impl std::fmt::Display for DimField {
@@ -98,6 +102,8 @@ impl std::fmt::Display for DimField {
             DimField::PatternSpacing => "pattern spacing",
             DimField::MirrorOffset => "mirror offset",
             DimField::PrimitiveDimA => "dimension A",
+            DimField::ChamferDistance => "chamfer distance",
+            DimField::FilletRadius => "fillet radius",
         })
     }
 }

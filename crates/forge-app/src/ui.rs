@@ -420,6 +420,30 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
         {
             PaletteAction::SaveNative.run(app);
         }
+        let modify_menu = ui.menu_button(chevron_label(icons::EDGES, "Modify"), |ui| {
+            if crate::bridge::button(ui, "Chamfer selected edges")
+                .on_hover_text(
+                    "K-03: equal-distance chamfer on the picked edge chains\nPick mode: Edges",
+                )
+                .clicked()
+            {
+                PaletteAction::ChamferEdges.run(app);
+            }
+            if crate::bridge::button(ui, "Fillet selected edges")
+                .on_hover_text("K-03: constant-radius fillet (polygonal arc)\nPick mode: Edges")
+                .clicked()
+            {
+                PaletteAction::FilletEdges.run(app);
+            }
+        });
+        // E2E bridge: record the Modify menu trigger rect.
+        crate::bridge::record(
+            "menu:Modify",
+            "Modify",
+            "menu",
+            modify_menu.response.rect,
+            modify_menu.response.enabled(),
+        );
         let export_menu = ui.menu_button(chevron_label(icons::EXPORT, "Export"), |ui| {
             let r = crate::bridge::button(ui, "STL (binary)");
             if r.clicked() {
@@ -515,6 +539,8 @@ fn feature_icon(feature: &Feature) -> char {
         Feature::Hole(_) => icons::DRILL,
         Feature::Datum(_) => icons::DATUM,
         Feature::ImportedMesh(_) => icons::IMPORTED_MESH,
+        Feature::Chamfer(_) => icons::EDGES,
+        Feature::Fillet(_) => icons::COMBINE,
     }
 }
 
@@ -1201,6 +1227,32 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 newp.angle = new_angle;
                 edit(app, Feature::CircularPattern(newp));
             }
+        }
+        Feature::Chamfer(p) => {
+            let mut d = p.distance;
+            ui.add(egui::Slider::new(&mut d, 0.05..=20.0).text("chamfer distance (mm)"));
+            ui.label(format!("{} edge(s)", p.edges.len()));
+            if (d - p.distance).abs() > 1e-9 {
+                let mut newp = p.clone();
+                newp.distance = d;
+                edit(app, Feature::Chamfer(newp));
+            }
+            dim_binding_field(ui, app, id, DimField::ChamferDistance, p.distance);
+        }
+        Feature::Fillet(p) => {
+            let mut r = p.radius;
+            ui.add(egui::Slider::new(&mut r, 0.05..=20.0).text("fillet radius (mm)"));
+            ui.label(format!(
+                "{} edge(s), {} arc segments",
+                p.edges.len(),
+                p.segments
+            ));
+            if (r - p.radius).abs() > 1e-9 {
+                let mut newp = p.clone();
+                newp.radius = r;
+                edit(app, Feature::Fillet(newp));
+            }
+            dim_binding_field(ui, app, id, DimField::FilletRadius, p.radius);
         }
         Feature::Mirror(p) => {
             let mut plane_x = p.plane_point.x;

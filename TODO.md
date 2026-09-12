@@ -560,9 +560,23 @@ for CAM (stock = body, ops target bodies). Do it before A-02.
 - [ ] **K-02 T-junction healing on booleans** `(M)` `P2`
       Post-boolean edge matching: insert T-vertices to restore exact
       watertight topology (currently volume-exact, topologically open).
-- [ ] **K-03 Fillet/chamfer (mesh approximate)** `(M)` `P2`
+- [x] **K-03 Fillet/chamfer (mesh approximate)** `(M)` `P2`
       Edge-chain discovery (dihedral threshold) → rolling-ball surface
       replacement on the triangle mesh; exact fillets deferred to K-06.
+      *Done: boolean-cutter approach in `forge-geometry::detail` —
+      `EdgeSpec` (positions, survives re-tessellation) → resolved frame
+      (area-weighted face clustering survives T-junction bridge slivers
+      and split faces; convexity via cross-face normal test) → cross-
+      section polygon → production extrude prism → Difference (convex
+      ridges) / Union (concave valleys). Fillets = tangent-polygon arc
+      (r²(1−π/4)·L cross-section, the standard fillet-weld area; arc-side
+      selection by midpoint distance; the atan2-arg-order bug class
+      documented). PEN overshoot breaks coplanar boolean faces. Features
+      `Chamfer`/`Fillet` in the tree (consume their target, parametric
+      distance/radius via DimField bindings), palette actions + Modify
+      toolbar menu from edge-chain selections, inspector sliders, 3 E2E
+      tests (apply + exact volume + undo, no-selection guard, menu
+      reachability) + 8 geometry unit tests.*
 - [ ] **K-04 Incremental tessellation cache** `(M)` `P2`
       Per-feature mesh caching with invalidation only on param change
       (already fingerprinted) + LOD per zoom; keeps 10k-feature docs at

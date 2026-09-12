@@ -546,6 +546,39 @@ impl Evaluator {
                 mesh.ensure_normals();
                 mesh
             }
+
+            Feature::Chamfer(p) => {
+                let distance = dim(DimField::ChamferDistance, p.distance);
+                if p.edges.is_empty() {
+                    return Err(crate::ModelError::Invalid(
+                        "chamfer has no edges (pick edges and re-apply)".into(),
+                    ));
+                }
+                let target_mesh = self.cached_body(p.target).ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!(
+                        "chamfer target {} has no body",
+                        p.target
+                    ))
+                })?;
+                forge_geometry::detail::chamfer_edges(target_mesh, &p.edges, distance)?
+            }
+
+            Feature::Fillet(p) => {
+                let radius = dim(DimField::FilletRadius, p.radius);
+                if p.edges.is_empty() {
+                    return Err(crate::ModelError::Invalid(
+                        "fillet has no edges (pick edges and re-apply)".into(),
+                    ));
+                }
+                let segments = (p.segments.max(2) as usize).min(64);
+                let target_mesh = self.cached_body(p.target).ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!(
+                        "fillet target {} has no body",
+                        p.target
+                    ))
+                })?;
+                forge_geometry::detail::fillet_edges(target_mesh, &p.edges, radius, segments)?
+            }
         };
 
         Ok(Some(CachedResult::Body(mesh)))
@@ -613,6 +646,10 @@ fn consumed_targets(feature: &Feature) -> Vec<FeatureId> {
             .then_some(p.target)
             .into_iter()
             .collect(),
+        // K-03: chamfer/fillet replace the target body with the detailed
+        // one (move semantics).
+        Feature::Chamfer(p) => vec![p.target],
+        Feature::Fillet(p) => vec![p.target],
         // W-01: a transform *moves* its source (the source body is
         // replaced by the transformed one).
         Feature::TransformBody { source, .. } => vec![*source],

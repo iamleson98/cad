@@ -361,6 +361,35 @@ pub enum Feature {
     Datum(DatumParams),
     /// Imported mesh body (I-01): repaired STL/OBJ geometry as a body.
     ImportedMesh(ImportedMeshParams),
+    /// Chamfer selected edges (K-03, mesh-approximate via boolean
+    /// cutters).
+    Chamfer(ChamferParams),
+    /// Fillet selected edges (K-03, polygonal arc approximation).
+    Fillet(FilletParams),
+}
+
+/// Edge targets for chamfer/fillet, captured geometrically (K-03).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChamferParams {
+    /// Body to detail.
+    pub target: FeatureId,
+    /// Edges (positions survive re-tessellation).
+    pub edges: Vec<forge_geometry::detail::EdgeSpec>,
+    /// Equal-distance chamfer (mm).
+    pub distance: f64,
+}
+
+/// Fillet parameters (K-03).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilletParams {
+    /// Body to detail.
+    pub target: FeatureId,
+    /// Edges.
+    pub edges: Vec<forge_geometry::detail::EdgeSpec>,
+    /// Radius (mm).
+    pub radius: f64,
+    /// Arc discretization (polygonal approximation).
+    pub segments: u32,
 }
 
 impl Feature {
@@ -406,6 +435,12 @@ impl Feature {
             },
             Feature::ImportedMesh(p) => {
                 format!("Import: {} ({} tris)", p.source, p.mesh.tri_count())
+            }
+            Feature::Chamfer(p) => {
+                format!("Chamfer {:.1} x{}", p.distance, p.edges.len())
+            }
+            Feature::Fillet(p) => {
+                format!("Fillet R{:.1} x{}", p.radius, p.edges.len())
             }
         }
     }
@@ -457,6 +492,8 @@ impl Feature {
             Feature::Hole(p) => vec![p.profile, p.target],
             Feature::Datum(_) => Vec::new(),
             Feature::ImportedMesh(_) => Vec::new(),
+            Feature::Chamfer(p) => vec![p.target],
+            Feature::Fillet(p) => vec![p.target],
         }
     }
 }

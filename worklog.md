@@ -85,3 +85,22 @@ Stage Summary:
 - The CAM loop is now closed end-to-end: model → strategies → toolpaths (visible) → simulation (verified gouge-free, % removed) → G-code (.nc), with the browser E2E guarding every button.
 - The simulator doubles as a toolpath verifier in CI (zero-gouge assertion on roughing) — the beginning of the "trustworthy CAM" story.
 - Next: K-03 fillet/chamfer + F-05 shell (part modeling gaps Inventor users expect), then browser-side e2e specs for CAM flows, then A-01 multi-body.
+
+---
+Task ID: 5
+Agent: main (Super Z)
+Task: K-03 fillet/chamfer as mesh-boolean edge details: kernel, feature tree, UI flows, E2E; land C-05 green on CI.
+
+Work Log:
+- forge-geometry/detail.rs rewritten from B-Rep stubs to a real mesh-approximate kernel: EdgeSpec (geometric, serializable, survives re-tessellation), resolve_frame (pooled segment-on-edge matching across duplicate/T-junction-split edges — the earlier exact-endpoint matching was nondeterministic through HashMap order; area-weighted 30° normal clustering defeats bridge slivers), convexity via n1·u2 < 0, chamfer wedge / fillet tangent-arc polygons, prisms built through the production extrude pipeline (winding guaranteed), Difference for convex + Union for concave with PEN leg penetration (coplanar-union faces lose chunks otherwise).
+- Bugs found on the way: atan2 argument order (f64::atan2 takes (y, x) — angle was measured from the wrong basis vector, producing zigzag "arcs"); fillet arc center belongs in the small wedge for BOTH convex and concave (identical polygon, different boolean op); my concave-fillet volume expectation was wrong (r²(1−π/4)·L fillet-weld area, not πr²/4·L); the L-fixture must properly overlap (edge-kissing unions are degenerate); spurious *slot.0 deref invoked nalgebra's Deref-to-coordinates.
+- forge-model: Feature::Chamfer/Fillet (params + labels + dependencies + DimField::ChamferDistance/FilletRadius bindings), evaluation via chamfer_edges/fillet_edges, consumed_targets so the detailed body replaces its target (move semantics).
+- forge-app: apply_edge_detail palette action (edge-chain selection → EdgeSpecs per chain segment), "Chamfer/Fillet selected edges" palette entries + Modify toolbar menu (bridge-registered), inspector sliders + binding fields, feature-tree icons.
+- E2E: chamfer flow (selection → feature → exact −45mm³ on the 3-edge corner chain → undo restores), no-selection guards, menu reachability; boot layout expects menu:Modify.
+- Full verification: fmt clean; clippy -D warnings clean (native all-targets + wasm32); 18 suites / 264 tests green.
+- CI for the C-05 push bac956d: ALL 6 JOBS GREEN.
+
+Stage Summary:
+- K-03 closed: chamfer + fillet on any sharp edge (convex or concave), parametric, undoable, E2E-guarded — the first "Inventor-expectation" detail features on the mesh kernel.
+- The boolean-cutter pattern (edge frame → polygon → extrude prism → CSG) generalizes: shell (F-05) can reuse it (offset prisms per face region).
+- Next: F-05 shell/hollow, then the browser e2e specs for CAM + chamfer flows, then A-01 multi-body.

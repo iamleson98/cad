@@ -28,9 +28,9 @@ pub use document::{DimBinding, DimField, Document, Param};
 pub use error::ModelError;
 pub use evaluate::{hole_placements, EvalBody, Evaluation, Evaluator};
 pub use feature::{
-    BooleanFeature, CircularPatternParams, DatumParams, ExtrudeOp, ExtrudeParams, Feature,
-    HoleKind, HoleParams, ImportedMeshParams, LinearPatternParams, LoftParams, MirrorParams,
-    PrimitiveKind, PrimitiveParams, RevolveParams, SweepParams,
+    BooleanFeature, ChamferParams, CircularPatternParams, DatumParams, ExtrudeOp, ExtrudeParams,
+    Feature, FilletParams, HoleKind, HoleParams, ImportedMeshParams, LinearPatternParams,
+    LoftParams, MirrorParams, PrimitiveKind, PrimitiveParams, RevolveParams, SweepParams,
 };
 pub use migrate::migrate_document;
 pub use selection::{Selection, SelectionItem};

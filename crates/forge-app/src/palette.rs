@@ -268,6 +268,18 @@ pub fn entries() -> Vec<PaletteEntry> {
             action: ExportGLTF,
         },
         PaletteEntry {
+            label: "Chamfer selected edges",
+            keywords: "modify chamfer edge detail",
+            icon: icons::EDGES,
+            action: ChamferEdges,
+        },
+        PaletteEntry {
+            label: "Fillet selected edges",
+            keywords: "modify fillet round edge detail",
+            icon: icons::COMBINE,
+            action: FilletEdges,
+        },
+        PaletteEntry {
             label: "Export 3MF",
             keywords: "file export mesh 3d print package zip",
             icon: icons::EXPORT,
@@ -381,6 +393,8 @@ pub enum PaletteAction {
     MirrorLastDatum,
     ExtrudeLastSketch,
     CutWithCylinder,
+    ChamferEdges,
+    FilletEdges,
     UnionLastTwo,
     DifferenceLastTwo,
     IntersectLastTwo,
@@ -484,6 +498,8 @@ impl PaletteAction {
 
             ExtrudeLastSketch => app.extrude_last_sketch(),
             CutWithCylinder => app.cut_with_cylinder(),
+            ChamferEdges => app.apply_edge_detail(DetailKind::Chamfer),
+            FilletEdges => app.apply_edge_detail(DetailKind::Fillet),
             UnionLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Union),
             DifferenceLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Difference),
             IntersectLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Intersection),
@@ -1332,5 +1348,116 @@ impl ForgeApp {
         } else {
             Scene::DEFAULT
         }
+    }
+}
+
+/// Which edge-detail feature to apply (K-03).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DetailKind {
+    Chamfer,
+    Fillet,
+}
+
+impl ForgeApp {
+    /// Create a chamfer/fillet feature from the current *edge* selection
+    /// (K-03): resolve each selected edge chain back to geometry
+    /// (EdgeSpec survives re-tessellation) and add the feature.
+    pub(crate) fn apply_edge_detail(&mut self, kind: DetailKind) {
+        use crate::picking::{CHAIN_TOL, EDGE_TOL};
+        use forge_geometry::detail::EdgeSpec;
+        use forge_model::SelectionItem;
+        use forge_model::{ChamferParams, Feature, FilletParams};
+
+        // Collect edge selections grouped by body.
+        let mut edge_ids: Vec<(forge_core::BodyId, forge_core::EdgeId)> = Vec::new();
+        for item in &self.selection.items {
+            if let SelectionItem::Edge { body, edge } = item {
+                edge_ids.push((*body, *edge));
+            }
+        }
+        if edge_ids.is_empty() {
+            self.set_status("Pick edges first (viewport pick mode: Edges)");
+            return;
+        }
+        let Some(ev) = self.last_evaluation.as_ref() else {
+            self.set_status("Evaluate a model first");
+            return;
+        };
+
+        // Resolve each selected chain to EdgeSpecs.
+        let mut by_target: std::collections::BTreeMap<forge_core::FeatureId, Vec<EdgeSpec>> =
+            Default::default();
+        for (body_id, edge_id) in edge_ids {
+            let Some(body) = ev.bodies.iter().find(|b| b.id == body_id) else {
+                continue;
+            };
+            // chain_id = min vertex index of the chain (picking.rs).
+            let chains = body.mesh.sharp_edge_chains(EDGE_TOL, CHAIN_TOL);
+            for chain in &chains {
+                let cid = chain
+                    .iter()
+                    .flat_map(|e| e.iter())
+                    .copied()
+                    .map(u64::from)
+                    .min()
+                    .unwrap_or(u64::MAX);
+                if cid != edge_id.raw() {
+                    continue;
+                }
+                for [a, b] in chain {
+                    let pa = body.mesh.positions[*a as usize];
+                    let pb = body.mesh.positions[*b as usize];
+                    by_target
+                        .entry(body.source)
+                        .or_default()
+                        .push(EdgeSpec { a: pa, b: pb });
+                }
+            }
+        }
+        if by_target.is_empty() {
+            self.set_status("Selected edges no longer exist (re-pick after edit)");
+            return;
+        }
+
+        let mut added = 0;
+        for (target, edges) in by_target {
+            let feature = match kind {
+                DetailKind::Chamfer => Feature::Chamfer(ChamferParams {
+                    target,
+                    edges,
+                    distance: 1.0,
+                }),
+                DetailKind::Fillet => Feature::Fillet(FilletParams {
+                    target,
+                    edges,
+                    radius: 1.0,
+                    segments: 16,
+                }),
+            };
+            match self.doc.add_feature(feature) {
+                Ok(id) => {
+                    if let Some(node) = self.doc.tree.get(id).cloned() {
+                        let _ = self
+                            .commands
+                            .execute(forge_model::Command::AddFeature { node }, &mut self.doc);
+                    }
+                    added += 1;
+                }
+                Err(e) => {
+                    self.set_status(format!("{e}"));
+                    return;
+                }
+            }
+        }
+        self.selection.clear();
+        self.set_status(format!(
+            "{} applied to selected edges — tune it in the inspector",
+            match kind {
+                DetailKind::Chamfer => "Chamfer",
+                DetailKind::Fillet => "Fillet",
+            }
+        ));
+        let _ = added;
+        self.request_evaluation();
     }
 }
