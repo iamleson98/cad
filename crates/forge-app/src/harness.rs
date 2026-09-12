@@ -165,6 +165,30 @@ impl Harness {
         }]);
     }
 
+    /// Scroll at a screen position (wheel): positive `dy` scrolls down.
+    pub fn scroll_at(&mut self, pos: Pos2, dy: f32) {
+        self.frame(vec![Event::PointerMoved(pos)]);
+        self.frame(vec![Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::Vec2::new(0.0, dy),
+            modifiers: Modifiers::default(),
+            phase: egui::TouchPhase::Move,
+        }]);
+        self.frames(2);
+    }
+
+    /// Scroll the widget with `id` into view (wheel-scrolls the enclosing
+    /// panel so the widget lands at ~60% panel height). Anchors the wheel
+    /// inside the bottom dock region; one line ≈ 50 px.
+    pub fn scroll_to_widget(&mut self, id: &str) {
+        let w = self.widget(id);
+        let (_, y) = w.center();
+        let dy = (y - 780.0) / 50.0;
+        if dy.abs() >= 0.5 {
+            self.scroll_at(pos2(700.0, 750.0), dy.clamp(-20.0, 20.0));
+        }
+    }
+
     /// Click a widget by exact id.
     pub fn click(&mut self, id: &str) {
         let w = self.widget(id);

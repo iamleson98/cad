@@ -17,6 +17,7 @@ forge-sketch = { workspace = true }
 forge-model = { workspace = true }
 forge-io = { workspace = true }
 forge-render = { workspace = true }
+forge-cam = { workspace = true }
 
 egui = { workspace = true }
 eframe = { workspace = true }

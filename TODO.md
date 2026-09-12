@@ -1,9 +1,10 @@
 # ForgeCAD — Road to World-Class: TODO
 
 Gap analysis derived from a feature-matrix comparison against production 3D CAD
-systems (SolidWorks, Fusion 360, Onshape, FreeCAD, Shapr3D) and open-source
-Rust CAD research (Fornjot, truck, opencascade-rs, KittyCAD solver
-experiments). Items are grouped by subsystem, priority-ranked (P0 = blocks
+systems (**Autodesk Inventor — the reference target: part modeling, assembly,
+drawings, sheet metal, and integrated CAM**; also SolidWorks, Fusion 360,
+Onshape, FreeCAD, Shapr3D) and open-source Rust CAD research (Fornjot, truck,
+opencascade-rs, KittyCAD solver experiments). Items are grouped by subsystem, priority-ranked (P0 = blocks
 daily use, P1 = expected by any professional user, P2 = competitive parity,
 P3 = differentiators), and ordered into implementation waves.
 
@@ -396,12 +397,133 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       (missing field) loads + migrates + re-saves at current, future
       version rejected. Contributor rules documented in `migrate.rs`.*
 
-## Wave 5 — Assembly & drawing subsystems
+## Wave 8 — Inventor parity: integrated CAM subsystem (the "beat Inventor" wave)
 
-- [ ] **A-01 Multi-body part documents** `(M)` `P1`
+Inventor ships Inventor CAM/HSM in-process: feature recognition, 2.5D/3-axis
+strategies, stock simulation, G-code post. ForgeCAD's mesh kernel is actually
+well-suited to CAM (waterline slicing of a mesh is the standard 3-axis CAM
+input); this wave builds a full CAM module as a new `forge-cam` crate plus app
+integration. Naming: `C-xx`.
+
+- [x] **C-01 CAM core crate (`forge-cam`)** `(M)` `P0`
+      Tool library (flat/bull-nose/ball end mills + drills, feeds & speeds
+      defaults, units); machine setup (stock box / from-body bounds, WCS
+      origin, safe Z, clearance); heightfield CAM kernel (top-surface
+      rasterization, tool-footprint dilation → cutter-location field,
+      marching-squares waterlines) on any `TriMesh`; 2.5D strategies —
+      facing, raster roughing with stepover/stepdown and stay-down links,
+      waterline contour finishing, drilling (hole centers + peck cycles);
+      time & path-length estimates. Fully headless + unit-tested (no UI
+      deps).
+      *Done: new `forge-cam` crate (7th workspace member). Heightfield
+      kernel: sparse-batch parallel rasterization (O(covered) memory),
+      flat/ball tool dilation → CL field, marching squares with saddle
+      disambiguation + hash stitching. Strategies: raster roughing with
+      collision-checked stay-down links (every link verified against the
+      CL field — gouge-free by construction), facing, waterline finishing
+      with climb-milling-consistent loop orientation, peck drilling with
+      nearest-neighbor ordering + tool-vs-hole fit warnings. 29 unit
+      tests incl. determinism, floor-z, gouge guards.*
+- [x] **C-02 G-code post-processor** `(S)` `P1`
+      Generic Fanuc-style 3-axis post: G0/G1 rapids & feeds, G81/G83 peck
+      drilling with R-plane, tool changes (T/M6), spindle (S/M3), program
+      header/footer + percent markers, modal feed formatting; line
+      numbering option; fixture offset G54. Regression: golden-file tests
+      for each strategy on a fixed part.
+      *Done: `forge-cam::post` — Fanuc-style 3-axis post with modal
+      motion+feed suppression, G81/G83 drill cycles (R-plane, Q peck,
+      G80 cancel), tool changes (T/M6, G43 H), spindle, header/footer
+      with `%` markers, per-op comments with stats. Ops without cutting
+      moves are skipped. Golden assertions per strategy; byte-identical
+      determinism test.*
+- [x] **C-03 CAM UI: setup + strategy panel** `(M)` `P1`
+      New CAM mode/tab in the app: stock preview (ghost box), tool pick
+      from library (table + edit), strategy selection, per-strategy
+      parameters (depth of cut, stepover, stock to leave, feed rates,
+      spindle), compute button with progress, operation list with
+      per-op suppress/delete (like the feature tree), unit-aware.
+      *Done: `ForgeApp.cam` + `cam_panel` bottom dock (toggle from the
+      toolbar DRILL button): op list with suppress-eye/delete, per-strategy
+      param editor (tool picker, DOC, stepover, leave, floor Z, peck),
+      display toggles, stock margins, Compute + Export G-code, status
+      line with cut length / est. time / hole count. CAM results auto-
+      invalidate on re-evaluation. 6 new native E2E tests + 8 unit tests
+      (incl. the harness scroll helper for below-fold widgets).*
+- [x] **C-04 Toolpath visualization** `(M)` `P1`
+      Viewport overlay: polylines per op, rapid vs feed moves styled
+      differently, tool-position animation (play/step), collision-free
+      depth-coloring; toggle visibility per operation. Rendered via the
+      existing line pipeline (forge-render feature edges reuse).
+      *Done: `Scene.overlays: Vec<OverlayLines>` — new generic line-
+      overlay path in the renderer (alpha-blended line pipeline, never
+      pickable). CAM feed moves render cyan, rapids amber, stock ghost
+      as a 12-edge box; per-op visibility = suppress; version bump only
+      on change. Tool-position play/step animation folded into C-05
+      (simulation will drive it).*
+- [ ] **C-05 Stock & material removal simulation** `(M)` `P2`
+      Heightfield (2.5D) material grid updated per move → voxel-ish color
+      map of remaining stock, "in-process" part comparison, cut-vs-gouge
+      report. This is what makes CAM feel trustworthy.
+- [x] **C-06 Hole feature recognition → drill ops** `(S)` `P2`
+      Detect `Feature::Hole` placements (already parametric!) and
+      auto-generate peck-drill operations with cycle depths from the
+      feature (Inventor's AFR-lite for holes).
+      *Done: `forge_model::hole_placements` resolves every Hole feature's
+      sketch (points/circle centers) through its datum plane to world
+      XYZ + entry/depth; `CamState::holes_from_doc` feeds the Drill
+      strategy directly. Recognition fixture test with point + circle
+      placements.*
+- [ ] **C-07 Rest machining / 3D strategies** `(L)` `P3`
+      Steep+shallow finishing, pencil passes, 3D roughing with Z-level
+      rest detection (needs C-05's material grid).
+- [ ] **C-08 Speeds & feeds advisor** `(S)` `P3`
+      Material + tool lookup table (chipload per material), surface-speed
+      → RPM/feed calculation, warnings on unrealistic values.
+- [ ] **C-09 CLSF / machine simulator import** `(P3)` — deferred.
+      Verifying third-party G-code round-trip is nice-to-have.
+
+## Wave 9 — Sheet metal (Inventor parity)
+
+- [ ] **SM-01 Sheet-metal rules + base face** `(M)` `P2`
+      Thickness, K-factor per bend, bend radius default; base face from
+      sketch profile extruded to thickness.
+- [ ] **SM-02 Flange + bend authoring** `(M)` `P2`
+      Pick model edge → flange with angle/bend; bend unroll math (K-factor
+      bend allowance); corner reliefs.
+- [ ] **SM-03 Flat pattern + DXF export** `(S)` `P2`
+      Flatten the flange graph to a 2D outline (bend lines marked) and
+      export DXF for laser/waterjet cutting — pairs with CAM (C-xx) as
+      the classic laser workflow.
+- [ ] **SM-04 Punch/emboss features** `(P3)` — deferred.
+- [ ] **SM-05 Unfold/refold state toggle** `(M)` `P3`.
+
+## Wave 10 — Multi-body → assembly ramp (explicitly re-sequenced)
+
+A-01 is the foundation both for assembly (occurrences reference bodies) and
+for CAM (stock = body, ops target bodies). Do it before A-02.
+
+- [ ] **A-01 Multi-body part documents** `(M)` `P1` *(first)*
       Bodies list (independent solids per document with per-body
       visibility/material/name); foundation for assemblies and patterns
-      producing multiple bodies.
+      producing multiple bodies. Today: extrude-New/imports/booleans
+      already make multiple `EvalBody`s — what's missing is body-level
+      identity across re-evals (stable ids), per-body visibility, a
+      bodies panel, and body-to-body boolean join/cut by selection.
+- [ ] **A-02 Assembly documents + occurrences** `(L)` `P2`
+      Instance graphs referencing part documents, rigid transforms per
+      occurrence, per-occurrence override color/suppress.
+- [ ] **A-03 Standard mates** `(L)` `P2`
+      Coincident/axis-align/distance-angle/planar contacts with solver
+      reuse (the 2D LM solver generalizes; 6-DOF per occurrence).
+- [ ] **A-04 Interference detection** `(M)` `P3`
+      Pairwise BSP intersection volume, report table.
+- [ ] **A-05 BOM generation** `(S)` `P3`
+      Auto table (part name, qty, custom columns) export CSV.
+- [ ] **DR-01 Drawing sheets** `(L)` `P3`
+      Orthographic projections (first/third angle), sections from W-02,
+      dimensioning, title blocks, PDF/SVG export. (Breaks into DR-01a view
+      engine / DR-01b dimensioning / DR-01c title block + export when
+      started.)
 - [ ] **A-02 Assembly documents + occurrences** `(L)` `P2`
       Instance graphs referencing part documents, rigid transforms per
       occurrence, per-occurrence override color/suppress.
@@ -534,3 +656,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
 5. Crash-safe: any panic recoverable to last autosave (already true) +
    crash reporter (PR-01).
 6. Docs shipped; every UI control reachable by keyboard.
+7. **Inventor-parity bar (the "beat Inventor" definition):** parametric
+   part features incl. fillet/chamfer/shell; multi-body; assemblies with
+   mates; drawings out; sheet-metal flat pattern to DXF; and the differentiator
+   — integrated CAM: 2.5D strategies with visible toolpaths, stock
+   simulation, and verified G-code post, all in-process and scriptable in
+   CI (C-01 … C-06).

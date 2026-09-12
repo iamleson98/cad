@@ -15,6 +15,7 @@
 pub mod app;
 pub mod background;
 pub mod bridge;
+pub mod cam;
 pub mod crash;
 pub mod gizmo;
 pub mod icons;

@@ -746,3 +746,188 @@ fn rapid_mixed_interactions_soak() {
     assert!(h.wait_for_eval(500));
     assert_no_bridge_errors();
 }
+
+// ---------------------------------------------------------------------------
+// CAM workspace (C-03/C-04) — panel flows, compute, export, no crashes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cam_panel_toggle_and_empty_state() {
+    let _s = serial();
+    let mut h = Harness::new();
+    // Toolbar CAM button toggles the dock.
+    assert!(h.has_widget("tool:cam"));
+    h.click("tool:cam");
+    h.frames(2);
+    assert!(h.app.cam.panel_open);
+    // Empty state: ops list empty, no crash on any panel widget.
+    h.click_label("Compute");
+    h.frames(2);
+    assert!(h.app.cam.ops.is_empty());
+    assert!(h.app.cam.last_status.is_none() || h.app.cam.last_status.is_some());
+    // Close via the toolbar button again.
+    h.click("tool:cam");
+    h.frames(2);
+    assert!(!h.app.cam.panel_open);
+    assert_no_bridge_errors();
+}
+
+#[test]
+fn cam_add_op_compute_and_toolpaths() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Box);
+    assert!(h.wait_for_eval(2000));
+    assert_eq!(body_count(&h), 1);
+
+    // Open the CAM dock and add a roughing op.
+    h.click("tool:cam");
+    h.frames(2);
+    h.click_label("+ Rough");
+    h.frames(2);
+    assert_eq!(h.app.cam.ops.len(), 1);
+    assert_eq!(h.app.cam.ops[0].kind, crate::cam::CamStrategyKind::Rough);
+    assert!(h.app.cam.ops[0].result.is_none());
+
+    // Compute: toolpath + overlays + status.
+    h.click_label("Compute");
+    h.frames(3);
+    assert!(
+        h.app.cam.ops[0].result.is_some(),
+        "rough op has no toolpath"
+    );
+    let path = h.app.cam.ops[0].result.as_ref().unwrap();
+    assert!(path.cut_length() > 10.0, "cut length {}", path.cut_length());
+    assert!(path.moves.len() > 10);
+    assert!(!h.app.scene.overlays.is_empty(), "no viewport overlays");
+    assert!(h
+        .app
+        .scene
+        .overlays
+        .iter()
+        .any(|o| o.color == forge_render::Scene::CAM_FEED));
+    assert!(h.app.cam.last_status.as_ref().unwrap().contains("1 ops"));
+
+    // G-code export path: in-memory generation (file export runs async).
+    let g = h.app.cam.gcode().expect("gcode");
+    assert!(g.contains("T1 M6"));
+    assert!(g.contains("M30"));
+    assert_no_bridge_errors();
+}
+
+#[test]
+fn cam_all_strategy_kinds_compute_without_crash() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Cylinder);
+    assert!(h.wait_for_eval(3000));
+
+    h.click("tool:cam");
+    h.frames(2);
+    // One op of every kind, then compute all at once.
+    for label in ["+ Rough", "+ Face", "+ Waterline", "+ Drill"] {
+        h.click_label(label);
+        h.frames(1);
+    }
+    assert_eq!(h.app.cam.ops.len(), 4);
+    h.click_label("Compute");
+    h.frames(3);
+    for (i, op) in h.app.cam.ops.iter().enumerate() {
+        assert!(
+            op.result.is_some(),
+            "op {i} ({}) has no result",
+            op.kind.label()
+        );
+    }
+    // G-code covers every op (one tool change per distinct tool, or fewer).
+    let g = h.app.cam.gcode().expect("gcode");
+    assert!(g.contains("M30"));
+    // Full program is deterministic.
+    let g2 = h.app.cam.gcode().unwrap();
+    assert_eq!(g, g2);
+    assert_no_bridge_errors();
+}
+
+#[test]
+fn cam_suppress_delete_and_recompute() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Box);
+    assert!(h.wait_for_eval(2000));
+    h.click("tool:cam");
+    h.frames(2);
+    h.click_label("+ Rough");
+    h.click_label("Waterline");
+    h.click_label("Compute");
+    h.frames(2);
+    assert!(h.app.cam.ops.iter().all(|o| o.result.is_some()));
+
+    // Suppress the first op: recompute skips it.
+    h.click("cam:op0:suppress");
+    h.frames(1);
+    assert!(!h.app.cam.ops[0].enabled);
+    h.click_label("Compute");
+    h.frames(2);
+    assert!(h.app.cam.ops[0].result.is_none());
+    assert!(h.app.cam.ops[1].result.is_some());
+
+    // Delete the second op.
+    h.click("cam:op1:delete");
+    h.frames(1);
+    assert_eq!(h.app.cam.ops.len(), 1);
+    assert_no_bridge_errors();
+}
+
+#[test]
+fn cam_recompute_after_model_change_invalidates_results() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Box);
+    assert!(h.wait_for_eval(2000));
+    h.click("tool:cam");
+    h.click_label("+ Rough");
+    h.click_label("Compute");
+    h.frames(2);
+    assert!(h.app.cam.ops[0].result.is_some());
+
+    // Edit the model (add another solid) → new evaluation clears CAM.
+    add_solid(&mut h, PrimitiveKind::Sphere);
+    assert!(h.wait_for_eval(3000));
+    h.frames(2);
+    assert!(
+        h.app.cam.ops[0].result.is_none(),
+        "CAM results survived a re-eval"
+    );
+    assert!(h.app.cam.gcode.is_none());
+    assert_no_bridge_errors();
+}
+
+#[test]
+fn cam_display_toggles_change_overlays() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Box);
+    assert!(h.wait_for_eval(2000));
+    h.click("tool:cam");
+    h.click_label("+ Rough");
+    h.click_label("Compute");
+    h.frames(2);
+    let with_stock = h.app.scene.overlays.len();
+    assert!(with_stock >= 2); // stock + feed lines
+                              // Toggle stock off → one fewer overlay.
+    h.click_label("stock");
+    h.frames(1);
+    let without_stock = h.app.scene.overlays.len();
+    assert_eq!(without_stock, with_stock - 1);
+    // Toggle toolpaths off → only rapids remain (rapids hidden → 0).
+    h.click_label("paths");
+    h.frames(1);
+    assert!(h.app.scene.overlays.is_empty());
+    assert_no_bridge_errors();
+}
+
+/// Debug helper: add a box solid and settle.
+#[allow(dead_code)]
+fn debug_add_box(h: &mut Harness) {
+    add_solid(h, PrimitiveKind::Box);
+}

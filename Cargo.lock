@@ -1266,6 +1266,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "env_logger",
+ "forge-cam",
  "forge-core",
  "forge-geometry",
  "forge-io",
@@ -1283,6 +1284,17 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+]
+
+[[package]]
+name = "forge-cam"
+version = "0.1.0"
+dependencies = [
+ "forge-core",
+ "forge-geometry",
+ "rayon",
+ "ron",
+ "serde",
 ]
 
 [[package]]

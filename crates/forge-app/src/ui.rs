@@ -258,6 +258,19 @@ pub fn toolbar(ui: &mut egui::Ui, app: &mut ForgeApp) {
         {
             PaletteAction::ToggleMeasure.run(app);
         }
+        if tool_button(
+            ui,
+            "cam",
+            icons::DRILL,
+            None,
+            "CAM workspace: toolpaths, G-code\nStrategies computed from the model",
+            app.cam.panel_open,
+            true,
+        )
+        .clicked()
+        {
+            app.cam.panel_open = !app.cam.panel_open;
+        }
 
         ui.separator();
 
@@ -1806,4 +1819,369 @@ pub fn palette_overlay(ctx: &egui::Context, app: &mut ForgeApp) {
         app.palette_cursor = 0;
         action.run(app);
     }
+}
+
+/// CAM workspace dock (C-03): operations, tools, compute, G-code export.
+pub fn cam_panel(ui: &mut egui::Ui, app: &mut ForgeApp) {
+    use crate::cam::CamStrategyKind;
+    use crate::icons;
+    use crate::theme;
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+
+            // -- Header ---------------------------------------------------
+            ui.horizontal(|ui| {
+                ui.label(icons::colored(icons::DRILL, 15.0, theme::ACCENT));
+                ui.label(theme::semibold("CAM").size(13.5));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if crate::bridge::button(ui, "Close").clicked() {
+                        app.cam.panel_open = false;
+                    }
+                    if crate::bridge::button(ui, "Export G-code")
+                        .on_hover_text("Write the .nc program for all computed operations")
+                        .clicked()
+                    {
+                        app.cam_export_gcode();
+                    }
+                    if crate::bridge::button(ui, "Compute")
+                        .on_hover_text("Run every enabled operation against the current model")
+                        .clicked()
+                    {
+                        app.cam_compute();
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            ui.separator();
+
+            ui.add_space(4.0);
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.label("Add operation:");
+                for kind in CamStrategyKind::ALL {
+                    // "+" prefix keeps the label distinct from toolbar
+                    // buttons with the same word (e.g. "Drill").
+                    if crate::bridge::button(ui, format!("+ {}", kind.label()))
+                        .on_hover_text(match kind {
+                            CamStrategyKind::Rough => {
+                                "Raster roughing: clear stock above the floor (stepdown/stepover)"
+                            }
+                            CamStrategyKind::Face => "Face the stock top down to a level",
+                            CamStrategyKind::Waterline => {
+                                "Waterline finish: constant-Z wall & slope passes"
+                            }
+                            CamStrategyKind::Drill => {
+                                "Peck-drill the holes recognized from Hole features"
+                            }
+                        })
+                        .clicked()
+                    {
+                        let id = app.cam.add_op(kind);
+                        let _ = id;
+                        app.set_status(format!("CAM: added {} operation", kind.label()));
+                    }
+                }
+            });
+            ui.add_space(6.0);
+
+            if app.cam.ops.is_empty() {
+                ui.label(
+                    egui::RichText::new(
+                        "No operations. Add Rough, Face, Waterline or Drill; pick a tool; press Compute.",
+                    )
+                    .weak()
+                    .size(11.5),
+                );
+                return;
+            }
+
+            // -- Operation list -------------------------------------------
+            let mut remove: Option<u32> = None;
+            let mut eye_toggle: Option<usize> = None;
+            let mut selected = app.cam_selected_op;
+            for (i, op) in app.cam.ops.iter().enumerate() {
+                let is_sel = app.cam_selected_op == i;
+                let result_info = op.result.as_ref().map(|r| {
+                    format!(
+                        "cut {:.0}mm · {:.1}min · {} moves",
+                        r.cut_length(),
+                        r.time_minutes(),
+                        r.moves.len()
+                    )
+                });
+                egui::Frame::default()
+                    .fill(if is_sel {
+                        egui::Color32::from_rgba_premultiplied(30, 34, 40, 255)
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    })
+                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let name = format!("{} #{}", op.kind.label(), op.id + 1);
+                            if ui
+                                .selectable_label(is_sel, icons::icon_label(icons::ACTIVITY, &name))
+                                .clicked()
+                            {
+                                selected = i;
+                            }
+                            let eye = ui
+                                .selectable_label(
+                                    !op.enabled,
+                                    icons::sized(
+                                        if op.enabled { icons::EYE } else { icons::EYE_OFF },
+                                        13.0,
+                                    ),
+                                )
+                                .on_hover_text("Suppress / enable this operation");
+                            crate::bridge::record(
+                                format!("cam:op{}:suppress", op.id),
+                                "Suppress operation",
+                                "selectable",
+                                eye.rect,
+                                eye.enabled(),
+                            );
+                            if eye.clicked() {
+                                eye_toggle = Some(i);
+                            }
+                            let del = ui
+                                .selectable_label(false, icons::sized(icons::DELETE, 13.0))
+                                .on_hover_text("Delete operation");
+                            crate::bridge::record(
+                                format!("cam:op{}:delete", op.id),
+                                "Delete operation",
+                                "selectable",
+                                del.rect,
+                                del.enabled(),
+                            );
+                            if del.clicked() {
+                                remove = Some(op.id);
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if let Some(info) = result_info {
+                                        ui.label(egui::RichText::new(info).size(10.5).weak());
+                                    } else if !op.enabled {
+                                        ui.label(egui::RichText::new("suppressed").size(10.5).weak());
+                                    } else {
+                                        ui.label(egui::RichText::new("not computed").size(10.5).weak());
+                                    }
+                                },
+                            );
+                        });
+                        if !op.warnings.is_empty() {
+                            for w in &op.warnings {
+                                ui.label(
+                                    egui::RichText::new(format!("{} {w}", icons::ALERT))
+                                        .size(10.5)
+                                        .color(egui::Color32::from_rgb(220, 170, 80)),
+                                );
+                            }
+                        }
+                    });
+            }
+            app.cam_selected_op = selected.min(app.cam.ops.len().saturating_sub(1));
+            if let Some(i) = eye_toggle {
+                if let Some(o) = app.cam.ops.get_mut(i) {
+                    o.enabled = !o.enabled;
+                }
+            }
+            if let Some(id) = remove {
+                app.cam.remove_op(id);
+                if app.cam_selected_op >= app.cam.ops.len() {
+                    app.cam_selected_op = app.cam.ops.len().saturating_sub(1);
+                }
+            }
+            ui.add_space(6.0);
+            ui.separator();
+
+            ui.add_space(4.0);
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.label(theme::semibold("Display").size(12.0));
+                crate::bridge::checkbox(ui, &mut app.cam.show_stock, "stock");
+                crate::bridge::checkbox(ui, &mut app.cam.show_toolpaths, "paths");
+                crate::bridge::checkbox(ui, &mut app.cam.show_rapids, "rapids");
+            });
+            egui::Grid::new("cam-stock-grid")
+                .num_columns(2)
+                .spacing([10.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Stock XY margin (mm):");
+                    let mut v = app.cam.stock_margin;
+                    ui.add(
+                        egui::DragValue::new(&mut v)
+                            .speed(0.5)
+                            .range(0.0..=50.0)
+                    );
+                    app.cam.stock_margin = v;
+                    ui.end_row();
+                    ui.label("Stock top margin (mm):");
+                    let mut v = app.cam.stock_top_margin;
+                    ui.add(
+                        egui::DragValue::new(&mut v)
+                            .speed(0.5)
+                            .range(0.0..=50.0)
+                    );
+                    app.cam.stock_top_margin = v;
+                    ui.end_row();
+                });
+            app.cam.build_overlays(&mut app.scene);
+
+            // -- Selected operation editor ---------------------------------
+            let idx = app.cam_selected_op.min(app.cam.ops.len() - 1);
+            let tool_names: Vec<String> = app
+                .cam
+                .library
+                .tools
+                .iter()
+                .map(|t| format!("T{} {} ({:.1}mm)", t.id + 1, t.name, t.diameter))
+                .collect();
+            if let Some(op) = app.cam.ops.get_mut(idx) {
+                ui.label(theme::semibold("Operation").size(12.0));
+                ui.add_space(2.0);
+                egui::Grid::new("cam-op-grid")
+                    .num_columns(2)
+                    .spacing([10.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Tool:");
+                        let current = app
+                            .cam
+                            .library
+                            .get(op.tool_id)
+                            .map(|t| t.id as usize)
+                            .unwrap_or(0);
+                        let mut pick = current;
+                        let combo = egui::ComboBox::from_id_salt("cam-op-tool")
+                            .selected_text(
+                                tool_names.get(pick).cloned().unwrap_or_else(|| "?".into()),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (k, name) in tool_names.iter().enumerate() {
+                                    ui.selectable_value(&mut pick, k, name.clone());
+                                }
+                            });
+                        let _ = combo.response;
+                        crate::bridge::record(
+                            "cam:op:tool",
+                            "Tool",
+                            "combo",
+                            combo.response.rect,
+                            true,
+                        );
+                        if pick != current {
+                            if let Some(t) = app.cam.library.tools.get(pick) {
+                                op.tool_id = t.id;
+                            }
+                        }
+                        ui.end_row();
+
+                        let show_stepdown = op.kind != CamStrategyKind::Drill;
+                        let show_stepover =
+                            matches!(op.kind, CamStrategyKind::Rough | CamStrategyKind::Face);
+                        let show_leave = op.kind != CamStrategyKind::Drill;
+                        let show_floor = matches!(
+                            op.kind,
+                            CamStrategyKind::Rough | CamStrategyKind::Face
+                        );
+
+                        if show_stepdown {
+                            ui.label(if op.kind == CamStrategyKind::Waterline {
+                                "Stepdown (mm):"
+                            } else {
+                                "Depth of cut (mm):"
+                            });
+                            let mut v = op.stepdown;
+                            ui.add(
+                                egui::DragValue::new(&mut v)
+                                    .speed(0.1)
+                                    .range(0.1..=20.0),
+                            );
+                            op.stepdown = v;
+                            ui.end_row();
+                        }
+                        if show_stepover {
+                            ui.label("Stepover (mm):");
+                            let mut v = op.stepover;
+                            ui.add(
+                                egui::DragValue::new(&mut v)
+                                    .speed(0.1)
+                                    .range(0.2..=20.0),
+                            );
+                            op.stepover = v;
+                            ui.end_row();
+                        }
+                        if show_leave {
+                            ui.label("Stock to leave (mm):");
+                            let mut v = op.leave;
+                            ui.add(
+                                egui::DragValue::new(&mut v)
+                                    .speed(0.02)
+                                    .range(0.0..=2.0),
+                            );
+                            op.leave = v;
+                            ui.end_row();
+                        }
+                        if show_floor {
+                            ui.label("Floor Z:");
+                            let mut on = op.floor_z.is_some();
+                            crate::bridge::checkbox(ui, &mut on, "");
+                            if on {
+                                let mut v = op.floor_z.unwrap_or_else(|| {
+                                    app.last_evaluation
+                                        .as_ref()
+                                        .map(|ev| {
+                                            ev.bodies
+                                                .iter()
+                                                .map(|b| b.mesh.bbox().min.z)
+                                                .fold(f64::INFINITY, f64::min)
+                                        })
+                                        .unwrap_or(0.0)
+                                        .max(-100.0)
+                                });
+                                ui.add(
+                                    egui::DragValue::new(&mut v)
+                                        .speed(0.1)
+                                        .range(-100.0..=100.0),
+                                );
+                                op.floor_z = Some(v);
+                            } else {
+                                op.floor_z = None;
+                                ui.label("(stock bottom)");
+                            }
+                            ui.end_row();
+                        }
+                        if op.kind == CamStrategyKind::Drill {
+                            ui.label("Peck depth:");
+                            let mut on = op.peck.is_some();
+                            crate::bridge::checkbox(ui, &mut on, "");
+                            if on {
+                                let mut v = op.peck.unwrap_or(1.0);
+                                ui.add(
+                                    egui::DragValue::new(&mut v)
+                                        .speed(0.1)
+                                        .range(0.2..=10.0),
+                                );
+                                op.peck = Some(v);
+                            } else {
+                                op.peck = None;
+                                ui.label("(G81 single shot)");
+                            }
+                            ui.end_row();
+                        }
+                    });
+            }
+
+            // -- Status ----------------------------------------------------
+            if let Some(status) = &app.cam.last_status {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(status).size(11.5).weak());
+            }
+        });
 }

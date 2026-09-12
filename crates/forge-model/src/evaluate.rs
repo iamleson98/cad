@@ -621,6 +621,60 @@ fn consumed_targets(feature: &Feature) -> Vec<FeatureId> {
 }
 
 /// Resolve a sketch feature's plane, following datum references (D-01).
+/// World-space placements of a hole feature's centers (C-06 CAM hole
+/// recognition): `[(world center, hole diameter, top Z, bottom Z)]`.
+///
+/// The top is the sketch plane Z (entry face), the bottom the plane minus
+/// the hole depth along the cut direction.
+pub fn hole_placements(
+    doc: &Document,
+    p: &crate::HoleParams,
+) -> crate::Result<Vec<(forge_core::Point3, f64, f64, f64)>> {
+    let sketch = doc
+        .sketch(p.profile)
+        .ok_or_else(|| crate::ModelError::MissingFeature(format!("{}", p.profile)))?;
+    let placements: Vec<forge_core::Point2> = sketch
+        .entities
+        .values()
+        .filter_map(|e| match e {
+            forge_sketch::SketchEntity::Point { p, .. } => Some(*p),
+            forge_sketch::SketchEntity::Circle { center, .. }
+            | forge_sketch::SketchEntity::Arc { center, .. } => Some(*center),
+            _ => None,
+        })
+        .collect();
+    if placements.is_empty() {
+        return Ok(Vec::new());
+    }
+    let plane = resolve_plane(doc, p.profile)?;
+    let n: forge_core::Vector3 = *plane.normal.as_ref();
+    let sign = match p.direction {
+        forge_geometry::ExtrudeDirection::Positive => 1.0,
+        forge_geometry::ExtrudeDirection::Negative => -1.0,
+        forge_geometry::ExtrudeDirection::Symmetric => 1.0,
+    };
+    let depth = p.depth;
+    Ok(placements
+        .into_iter()
+        .map(|pt| {
+            let world = plane.to_world(pt);
+            // Hole axis: from the sketch plane, `sign` half-spaces along
+            // the plane normal, length = depth.
+            let entry = world.z;
+            let far = world.z + sign * depth * n.z;
+            // CAM drills vertically: entry from above (the higher face).
+            let top = entry.max(far);
+            let bottom = entry.min(far);
+            (
+                forge_core::Point3::new(world.x, world.y, top),
+                p.diameter,
+                top,
+                bottom,
+            )
+        })
+        .collect())
+}
+
 fn resolve_plane(doc: &Document, sketch_id: FeatureId) -> crate::Result<forge_core::Plane> {
     let sketch = doc
         .sketch(sketch_id)

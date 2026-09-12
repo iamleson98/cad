@@ -84,6 +84,10 @@ pub struct ForgeApp {
 
     /// Measurement tool (W-08): picking surface points.
     pub measure_mode: bool,
+    /// CAM workspace (C-03/C-04): tool library, operations, toolpaths.
+    pub cam: crate::cam::CamState,
+    /// Selected CAM operation index in the panel.
+    pub cam_selected_op: usize,
     /// Picked surface points (0..=2, in click order).
     pub measure_picks: Vec<MeasurePick>,
     /// Label text of the finished measurement (distance + angle).
@@ -260,6 +264,8 @@ impl ForgeApp {
             palette_cursor: 0,
             pick_requested: false,
             measure_mode: false,
+            cam: crate::cam::CamState::default(),
+            cam_selected_op: 0,
             measure_picks: Vec::new(),
             measure_label: None,
             measure_bvhs: Vec::new(),
@@ -319,6 +325,13 @@ impl ForgeApp {
                 EvalResponse::Done(ev, duration) => {
                     self.eval_pending = false;
                     self.eval_done_count += 1;
+                    // CAM results are computed against one evaluation
+                    // snapshot: a new evaluation invalidates them (C-03).
+                    let cam_stale = self.cam_has_stale_results();
+                    if cam_stale {
+                        self.cam.clear_results();
+                        self.cam.build_overlays(&mut self.scene);
+                    }
                     self.last_evaluation = Some(ev);
                     self.last_eval_duration = Some(duration);
                     self.measure_bvhs_stale = true;
@@ -326,6 +339,12 @@ impl ForgeApp {
                 }
             }
         }
+    }
+
+    /// True when CAM toolpaths exist but were computed against an older
+    /// evaluation (they must be dropped before the new one lands).
+    fn cam_has_stale_results(&self) -> bool {
+        self.cam.ops.iter().any(|o| o.result.is_some()) || self.cam.gcode.is_some()
     }
 
     /// Rebuild the render scene from the last evaluation.
@@ -404,6 +423,50 @@ impl ForgeApp {
                 Err(e) => self.set_status(format!("Autosave failed: {e}")),
             }
             self.last_autosave = Instant::now();
+        }
+    }
+
+    /// Run the CAM compute (C-03): strategies against the last evaluation.
+    pub fn cam_compute(&mut self) {
+        let Some(ev) = self.last_evaluation.clone() else {
+            self.set_status("CAM: evaluate a model first");
+            return;
+        };
+        let status = self.cam.compute(&self.doc, &ev);
+        self.cam.build_overlays(&mut self.scene);
+        self.set_status(status);
+    }
+
+    /// Export the CAM G-code (C-02): native writes a `.nc` file, wasm
+    /// triggers a browser download.
+    pub fn cam_export_gcode(&mut self) {
+        let Some(gcode) = self.cam.gcode() else {
+            self.set_status("CAM: compute toolpaths first");
+            return;
+        };
+        let name = format!("{}.nc", self.doc.name.replace(char::is_whitespace, "_"));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let result = crate::web::download_bytes(&name, gcode.into_bytes(), "text/plain");
+            let msg = match result {
+                Ok(()) => format!("G-code exported: {name}"),
+                Err(e) => format!("G-code export failed: {e}"),
+            };
+            self.set_status(msg);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut path = std::env::current_dir().unwrap_or_default();
+            path.push(&name);
+            let what = "G-code".to_string();
+            let export_tx = self.export_tx.clone();
+            self.set_status("Exporting G-code…");
+            let bytes = gcode.into_bytes();
+            self.tokio_rt.spawn_blocking(move || {
+                let result: Result<(), String> =
+                    std::fs::write(&path, bytes).map_err(|e| format!("{e}"));
+                let _ = export_tx.send(ExportDone { what, path, result });
+            });
         }
     }
 
@@ -931,6 +994,14 @@ impl ForgeApp {
             .show(ui, |ui| {
                 ui::status_bar(ui, self);
             });
+        if self.cam.panel_open {
+            egui::Panel::bottom("cam")
+                .default_size(220.0)
+                .resizable(true)
+                .show(ui, |ui| {
+                    ui::cam_panel(ui, self);
+                });
+        }
         egui::Panel::left("tree")
             .default_size(230.0)
             .resizable(true)

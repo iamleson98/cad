@@ -24,7 +24,7 @@ pub mod shaders;
 pub use camera::{Camera, CameraUniform};
 pub use cull::Frustum;
 pub use renderer::{DisplayMode, PickResult, RenderOptions, Renderer, SectionPlane};
-pub use scene::{BodyStyle, Scene, SceneBody};
+pub use scene::{BodyStyle, OverlayLines, Scene, SceneBody};
 
 /// Render crate error type.
 #[derive(Debug, thiserror::Error)]

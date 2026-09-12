@@ -26,7 +26,7 @@ pub mod tree;
 pub use command::{Command, CommandStack};
 pub use document::{DimBinding, DimField, Document, Param};
 pub use error::ModelError;
-pub use evaluate::{EvalBody, Evaluation, Evaluator};
+pub use evaluate::{hole_placements, EvalBody, Evaluation, Evaluator};
 pub use feature::{
     BooleanFeature, CircularPatternParams, DatumParams, ExtrudeOp, ExtrudeParams, Feature,
     HoleKind, HoleParams, ImportedMeshParams, LinearPatternParams, LoftParams, MirrorParams,

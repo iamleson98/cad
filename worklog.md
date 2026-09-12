@@ -45,3 +45,25 @@ Work Log:
 Stage Summary:
 - The complete fast-iteration loop the user asked for now exists: change code → cargo test -p forge-app (1.3 s, 43 UI tests) → npx playwright test (~5 min, 22 browser tests) → push → CI runs everything headlessly in ~4-8 min warm.
 - Lesson recorded: ALWAYS verify release profiles when using cfg-gated modules (dev checks hide it); CI now enforces it on both targets.
+
+---
+Task ID: 3
+Agent: main (Super Z)
+Task: Deep research Inventor-parity gaps, update the TODO with CAM/sheet-metal/assembly waves, and build the CAM subsystem (forge-cam crate + app integration + E2E + CI).
+
+Work Log:
+- Deep research (web): Inventor feature matrix (part/assembly/drawings/sheet metal), InventorCAM/HSM strategies (adaptive clearing, waterline, peck drilling, AFR), Rust CAM landscape (heightfield/marching-squares is the standard 3-axis mesh approach).
+- TODO.md: inventor-parity re-anchor (header + "beat Inventor" checklist bar), new Wave 8 (C-01..C-09 CAM), Wave 9 (SM-01..SM-05 sheet metal), Wave 10 (A-01 re-sequenced as the assembly/CAM foundation).
+- Sandbox reset mid-session: re-provisioned rustup 1.98.1 + clippy/rustfmt, restored PAT credentials, re-cloned at 3a7bf24, re-applied the TODO + crate work.
+- New crate `forge-cam` (7th workspace member): tool.rs (Tool/ToolKind/ToolMaterial/ToolLibrary + Material speeds&feeds advisor data), field.rs (HeightField: sparse-batch parallel rasterization — memory O(covered), flat/ball dilation → CL field, marching squares with saddle disambiguation + hash-grid stitching), path.rs (Move/Feeds/Toolpath + length/time/segment stats), strategy.rs (rough/face/waterline/drill, segment_clear collision-checked stay-down links, climb-consistent loop orientation, nearest-neighbor drilling), setup.rs (Stock/Setup/safe_z), post.rs (Fanuc-style post: modal G0/G1, G81/G83 peck, T/M6, G43, % markers, deterministic).
+- forge-model: public `hole_placements` (hole feature → world centers/diameters/top/bottom through the sketch's datum plane).
+- forge-render: generic `OverlayLines` scene overlays (alpha-blended line pipeline, un-pickable, version bump only on change) + CAM_STOCK/CAM_FEED/CAM_RAPID colors.
+- forge-app: `cam.rs` (CamState: library/ops/stock/gcode/overlays; compute against the merged body mesh — concatenation is exact for the heightfield kernel; auto-invalidation on re-eval), `cam_panel` bottom dock (op list w/ suppress+delete, strategy params, tool picker, display toggles, stock margins, Compute, Export G-code native `.nc` + wasm download), toolbar CAM toggle, G-code export plumbing.
+- 6 native E2E CAM tests (panel toggle, add-op+compute+overlays+gcode, all four strategies, suppress/delete, re-eval invalidation, display toggles) + harness `scroll_at`/`scroll_to_widget` helpers; 8 CAM unit tests; 29 forge-cam crate tests.
+- Bugs found & fixed while testing: part_mesh index-offset-after-extend panic (out-of-bounds triangles), CAM eye/checkbox clicks landing below the panel's scroll fold (reordered panel so ops render first), checkbox label colliding with "Compute toolpaths" (renamed), overlays not rebuilding when all display toggles off (unconditional rebuild, change-detected version bump).
+- Verified: cargo fmt clean; clippy -D warnings clean (native dev+release, wasm32); 250 workspace tests green (18 suites); native release build (the shipped profile) compiles.
+
+Stage Summary:
+- Deliverables: full CAM core (C-01), G-code post (C-02), CAM UI dock (C-03), toolpath visualization overlays (C-04), hole recognition (C-06) — the "beat Inventor CAD/CAM" differentiator now exists end-to-end in-process: model → strategies → visible toolpaths → .nc program, all CI-scriptable.
+- Key insight: the mesh kernel is a CAM asset, not a liability — heightfield CAM over concatenated body meshes is exact, robust, and needs no B-Rep.
+- Next: C-05 material-removal simulation (drives tool animation), then K-03 fillet/chamfer + F-05 shell (part-modeling gaps), then push CI watch loop.

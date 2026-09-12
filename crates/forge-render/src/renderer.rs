@@ -117,6 +117,13 @@ struct GpuBody {
     pick_id: u32,
 }
 
+/// One line overlay uploaded to the GPU (C-04).
+struct GpuOverlay {
+    buf: wgpu::Buffer,
+    count: u32,
+    bg: wgpu::BindGroup,
+}
+
 /// Per-frame composite uniforms.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -210,6 +217,8 @@ pub struct Renderer {
     grid_buf: wgpu::Buffer,
     grid_bg: wgpu::BindGroup,
     grid_count: u32,
+    /// C-04: line overlays (CAM toolpaths etc.).
+    overlays: Vec<GpuOverlay>,
 
     // Offscreen targets.
     target_size: (u32, u32),
@@ -807,6 +816,7 @@ impl Renderer {
             grid_buf,
             grid_bg,
             grid_count,
+            overlays: Vec::new(),
             target_size: (0, 0),
             color_tex: None,
             normal_tex: None,
@@ -835,6 +845,51 @@ impl Renderer {
         }
         self.scene_version = scene.version;
         self.bodies.clear();
+        self.overlays.clear();
+
+        // C-04: upload line overlays (toolpaths).
+        for overlay in &scene.overlays {
+            if overlay.segments.is_empty() {
+                continue;
+            }
+            let mut verts = Vec::with_capacity(overlay.segments.len() * 2);
+            for (a, b) in &overlay.segments {
+                verts.push(LineVertex { pos: *a, _pad: 0.0 });
+                verts.push(LineVertex { pos: *b, _pad: 0.0 });
+            }
+            let buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("overlay-lines"),
+                    contents: bytemuck::cast_slice(&verts),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let model = ModelUniform {
+                model: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                color: overlay.color,
+                pick_id: [0.0; 4],
+            };
+            let model_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("overlay-model"),
+                    contents: bytemuck::bytes_of(&model),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("overlay-model-bg"),
+                layout: &self.model_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: model_buf.as_entire_binding(),
+                }],
+            });
+            self.overlays.push(GpuOverlay {
+                buf,
+                count: verts.len() as u32,
+                bg,
+            });
+        }
 
         for body in &scene.bodies {
             let mesh = &body.mesh;
@@ -1339,6 +1394,12 @@ impl Renderer {
                     rpass.set_vertex_buffer(0, body.line_buf.slice(..));
                     rpass.draw(0..body.line_count, 0..1);
                 }
+            }
+            // C-04: overlays draw regardless of the edge toggle.
+            for overlay in &self.overlays {
+                rpass.set_bind_group(1, &overlay.bg, &[]);
+                rpass.set_vertex_buffer(0, overlay.buf.slice(..));
+                rpass.draw(0..overlay.count, 0..1);
             }
             if options.show_grid {
                 rpass.set_pipeline(&self.grid_pipeline);

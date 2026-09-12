@@ -34,11 +34,24 @@ pub struct SceneBody {
     pub style: BodyStyle,
 }
 
+/// Analysis line overlay drawn with the line pipeline (world-space
+/// segments, constant color — C-04 CAM toolpaths, future sketch/debug
+/// overlays). Overlays are never pickable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayLines {
+    /// World-space segment list.
+    pub segments: Vec<([f32; 3], [f32; 3])>,
+    /// Linear RGBA color.
+    pub color: [f32; 4],
+}
+
 /// The whole scene, versioned for GPU upload tracking.
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     /// Drawable bodies.
     pub bodies: Vec<SceneBody>,
+    /// Line overlays (C-04: CAM toolpaths; unlit, un-pickable).
+    pub overlays: Vec<OverlayLines>,
     /// Show sharp-feature edge lines (FR-RD-03).
     pub show_edges: bool,
     /// Dihedral threshold (degrees) for what counts as a sharp edge.
@@ -56,6 +69,7 @@ impl Scene {
     pub fn new() -> Self {
         Self {
             bodies: Vec::new(),
+            overlays: Vec::new(),
             show_edges: true,
             edge_angle_deg: 40.0,
             show_grid: true,
@@ -82,4 +96,10 @@ impl Scene {
     pub const DEFAULT: [f32; 4] = [0.72, 0.74, 0.78, 1.0];
     /// Transparent body color.
     pub const GLASS: [f32; 4] = [0.65, 0.78, 0.92, 0.35];
+    /// CAM feed-move color (cyan).
+    pub const CAM_FEED: [f32; 4] = [0.16, 0.92, 0.86, 1.0];
+    /// CAM rapid-move color (amber, thin).
+    pub const CAM_RAPID: [f32; 4] = [0.95, 0.66, 0.19, 0.55];
+    /// CAM stock-ghost color.
+    pub const CAM_STOCK: [f32; 4] = [0.85, 0.88, 0.95, 0.12];
 }
