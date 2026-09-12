@@ -280,6 +280,12 @@ pub fn entries() -> Vec<PaletteEntry> {
             action: FilletEdges,
         },
         PaletteEntry {
+            label: "Shell body (open picked faces)",
+            keywords: "modify shell hollow wall thickness",
+            icon: icons::BODIES,
+            action: ShellBody,
+        },
+        PaletteEntry {
             label: "Export 3MF",
             keywords: "file export mesh 3d print package zip",
             icon: icons::EXPORT,
@@ -395,6 +401,7 @@ pub enum PaletteAction {
     CutWithCylinder,
     ChamferEdges,
     FilletEdges,
+    ShellBody,
     UnionLastTwo,
     DifferenceLastTwo,
     IntersectLastTwo,
@@ -500,6 +507,7 @@ impl PaletteAction {
             CutWithCylinder => app.cut_with_cylinder(),
             ChamferEdges => app.apply_edge_detail(DetailKind::Chamfer),
             FilletEdges => app.apply_edge_detail(DetailKind::Fillet),
+            ShellBody => app.apply_shell(),
             UnionLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Union),
             DifferenceLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Difference),
             IntersectLastTwo => app.boolean_last_two(forge_geometry::CsgOp::Intersection),
@@ -1459,5 +1467,97 @@ impl ForgeApp {
         ));
         let _ = added;
         self.request_evaluation();
+    }
+}
+
+impl ForgeApp {
+    /// Create a shell feature (F-05): hollow the latest body, opening
+    /// the picked faces (plane snapshots from the current selection).
+    pub(crate) fn apply_shell(&mut self) {
+        use forge_geometry::FacePlane;
+        use forge_model::{Feature, ShellParams};
+
+        // Target: the body of the (single) selection, or the latest body.
+        let ev = match self.last_evaluation.as_ref() {
+            Some(ev) if !ev.bodies.is_empty() => ev.clone(),
+            _ => {
+                self.set_status("No body to shell: add a solid first");
+                return;
+            }
+        };
+        let target = self
+            .selection
+            .single_face()
+            .and_then(|(bid, _)| ev.bodies.iter().find(|b| b.id == bid).map(|b| b.source));
+        let target = target.unwrap_or_else(|| {
+            // Latest solid-producing feature.
+            self.doc
+                .tree
+                .order()
+                .iter()
+                .rev()
+                .find(|id| {
+                    matches!(
+                        self.doc.feature(**id),
+                        Some(Feature::Primitive(_))
+                            | Some(Feature::Extrude(_))
+                            | Some(Feature::Boolean(_))
+                            | Some(Feature::Chamfer(_))
+                            | Some(Feature::Fillet(_))
+                    )
+                })
+                .copied()
+                .unwrap_or(ev.bodies[0].source)
+        });
+        let Some(body) = ev.bodies.iter().find(|b| b.source == target) else {
+            self.set_status("Shell target has no body");
+            return;
+        };
+
+        // Open faces: every picked face of this body → plane snapshot.
+        let mut open = Vec::new();
+        for item in &self.selection.items {
+            if let forge_model::SelectionItem::Face { body: bid, face } = item {
+                if *bid == body.id {
+                    let seed = face.raw() as usize;
+                    let cluster = body.mesh.face_cluster(seed, 2.0);
+                    if let Some(&tri) = cluster.first() {
+                        if let Some(n) = body.mesh.triangle_normal(tri) {
+                            let p = body.mesh.positions[body.mesh.triangle_idx(tri)[0] as usize];
+                            open.push(FacePlane {
+                                point: p,
+                                normal: n,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        let open_info = if open.is_empty() {
+            "closed hollow".to_string()
+        } else {
+            format!("{} open face(s)", open.len())
+        };
+
+        let feature = Feature::Shell(ShellParams {
+            target,
+            thickness: 1.5,
+            open,
+        });
+        match self.doc.add_feature(feature) {
+            Ok(id) => {
+                if let Some(node) = self.doc.tree.get(id).cloned() {
+                    let _ = self
+                        .commands
+                        .execute(forge_model::Command::AddFeature { node }, &mut self.doc);
+                }
+                self.selection.clear();
+                self.set_status(format!(
+                    "Shell created ({open_info}) — tune thickness in the inspector"
+                ));
+                self.request_evaluation();
+            }
+            Err(e) => self.set_status(format!("{e}")),
+        }
     }
 }

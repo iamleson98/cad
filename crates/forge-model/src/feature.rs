@@ -366,6 +366,8 @@ pub enum Feature {
     Chamfer(ChamferParams),
     /// Fillet selected edges (K-03, polygonal arc approximation).
     Fillet(FilletParams),
+    /// Shell / hollow the body (F-05, mesh plane-offset).
+    Shell(ShellParams),
 }
 
 /// Edge targets for chamfer/fillet, captured geometrically (K-03).
@@ -377,6 +379,17 @@ pub struct ChamferParams {
     pub edges: Vec<forge_geometry::detail::EdgeSpec>,
     /// Equal-distance chamfer (mm).
     pub distance: f64,
+}
+
+/// Shell parameters (F-05).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShellParams {
+    /// Body to hollow.
+    pub target: FeatureId,
+    /// Wall thickness (mm).
+    pub thickness: f64,
+    /// Open faces (plane snapshots — survive re-tessellation).
+    pub open: Vec<forge_geometry::FacePlane>,
 }
 
 /// Fillet parameters (K-03).
@@ -442,6 +455,13 @@ impl Feature {
             Feature::Fillet(p) => {
                 format!("Fillet R{:.1} x{}", p.radius, p.edges.len())
             }
+            Feature::Shell(p) => {
+                if p.open.is_empty() {
+                    format!("Shell {:.1}", p.thickness)
+                } else {
+                    format!("Shell {:.1} ({} open)", p.thickness, p.open.len())
+                }
+            }
         }
     }
 
@@ -494,6 +514,7 @@ impl Feature {
             Feature::ImportedMesh(_) => Vec::new(),
             Feature::Chamfer(p) => vec![p.target],
             Feature::Fillet(p) => vec![p.target],
+            Feature::Shell(p) => vec![p.target],
         }
     }
 }

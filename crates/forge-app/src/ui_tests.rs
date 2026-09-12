@@ -1100,3 +1100,94 @@ fn modify_menu_chamfer_button_reachable() {
     );
     assert_no_bridge_errors();
 }
+
+// ---------------------------------------------------------------------------
+// F-05: shell / hollow
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shell_body_flow_from_face_selection() {
+    let _s = serial();
+    let mut h = Harness::new();
+    add_solid(&mut h, PrimitiveKind::Box);
+    assert!(h.wait_for_eval(2000));
+    let v0 = h.app.last_evaluation.as_ref().unwrap().bodies[0]
+        .mesh
+        .volume_signed();
+
+    // Closed hollow (no face selection).
+    h.app.apply_shell();
+    h.frames(2);
+    assert!(h.wait_for_eval(4000));
+    assert_eq!(body_count(&h), 1);
+    let v1 = h.app.last_evaluation.as_ref().unwrap().bodies[0]
+        .mesh
+        .volume_signed();
+    // 40×30×20 box, t=1.5: outer − (37×27×17).
+    let want = 40.0 * 30.0 * 20.0 - 37.0 * 27.0 * 17.0;
+    assert!((v1 - want).abs() < 25.0, "closed shell {v1} vs {want}");
+
+    // Undo the closed shell, then apply an open-top one instead.
+    h.ctrl(Key::Z);
+    h.frames(2);
+    assert!(h.wait_for_eval(3000));
+
+    // Open-top shell: select the top face plane via a face snapshot.
+    {
+        let ev = h.app.last_evaluation.clone().unwrap();
+        let body = &ev.bodies[0];
+        // Find a top-face triangle (normal ≈ +Z, z = +10 — the box is
+        // centered at the origin).
+        let mut seed = None;
+        for t in 0..body.mesh.tri_count() {
+            if let Some(n) = body.mesh.triangle_normal(t) {
+                let p = body.mesh.positions[body.mesh.triangle_idx(t)[0] as usize];
+                if n.z > 0.99 && (p.z - 10.0).abs() < 1e-6 {
+                    seed = Some(t);
+                    break;
+                }
+            }
+        }
+        let seed = seed.expect("top face triangle");
+        let cluster = body.mesh.face_cluster(seed, 2.0);
+        let id = *cluster.iter().min().unwrap() as u64;
+        h.app.selection.select(forge_model::SelectionItem::Face {
+            body: body.id,
+            face: forge_core::FaceId::new(id),
+        });
+    }
+    h.app.apply_shell();
+    h.frames(2);
+    assert!(h.wait_for_eval(4000));
+    let v2 = h.app.last_evaluation.as_ref().unwrap().bodies[0]
+        .mesh
+        .volume_signed();
+    // Open top removes the top wall over the inner footprint (the rim
+    // ring stays): − 37×27×1.5.
+    let want_open = want - 37.0 * 27.0 * 1.5;
+    assert!(
+        (v2 - want_open).abs() < 30.0,
+        "open shell {v2} vs {want_open}"
+    );
+
+    // Undo → back to the box.
+    h.ctrl(Key::Z);
+    h.frames(2);
+    assert!(h.wait_for_eval(4000));
+    let v3 = h.app.last_evaluation.as_ref().unwrap().bodies[0]
+        .mesh
+        .volume_signed();
+    assert!((v3 - v0).abs() < 1e-6, "undo restores the box");
+    assert_no_bridge_errors();
+}
+
+#[test]
+fn shell_without_body_is_a_clean_noop() {
+    let _s = serial();
+    let mut h = Harness::new();
+    h.app.apply_shell();
+    h.frames(1);
+    assert!(h.app.status.contains("No body to shell"));
+    assert_eq!(h.app.doc.tree.len(), 0);
+    assert_no_bridge_errors();
+}

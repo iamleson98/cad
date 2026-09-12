@@ -541,6 +541,7 @@ fn feature_icon(feature: &Feature) -> char {
         Feature::ImportedMesh(_) => icons::IMPORTED_MESH,
         Feature::Chamfer(_) => icons::EDGES,
         Feature::Fillet(_) => icons::COMBINE,
+        Feature::Shell(_) => icons::BODIES,
     }
 }
 
@@ -1227,6 +1228,21 @@ pub fn inspector(ui: &mut egui::Ui, app: &mut ForgeApp) {
                 newp.angle = new_angle;
                 edit(app, Feature::CircularPattern(newp));
             }
+        }
+        Feature::Shell(p) => {
+            let mut t = p.thickness;
+            ui.add(egui::Slider::new(&mut t, 0.05..=20.0).text("wall thickness (mm)"));
+            ui.label(if p.open.is_empty() {
+                "closed hollow".to_string()
+            } else {
+                format!("{} open face(s) (plane snapshots)", p.open.len())
+            });
+            if (t - p.thickness).abs() > 1e-9 {
+                let mut newp = p.clone();
+                newp.thickness = t;
+                edit(app, Feature::Shell(newp));
+            }
+            dim_binding_field(ui, app, id, DimField::ShellThickness, p.thickness);
         }
         Feature::Chamfer(p) => {
             let mut d = p.distance;

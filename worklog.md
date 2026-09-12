@@ -104,3 +104,21 @@ Stage Summary:
 - K-03 closed: chamfer + fillet on any sharp edge (convex or concave), parametric, undoable, E2E-guarded — the first "Inventor-expectation" detail features on the mesh kernel.
 - The boolean-cutter pattern (edge frame → polygon → extrude prism → CSG) generalizes: shell (F-05) can reuse it (offset prisms per face region).
 - Next: F-05 shell/hollow, then the browser e2e specs for CAM + chamfer flows, then A-01 multi-body.
+
+---
+Task ID: 6
+Agent: main (Super Z)
+Task: F-05 shell/hollow: mesh plane-offset kernel, feature wiring, UI flow, E2E; verify K-03 CI.
+
+Work Log:
+- forge-geometry/shell.rs: `shell(mesh, t, open)` — inner solid = per-vertex least-squares intersection of adjacent face planes offset inward by t (uniform walls on polyhedra; 3×3 solve with vertex-normal fallback for degenerate corners); openings = pushing the inner face's vertices (incl. shared rim vertices → wall continuation) past the outer surface; result = Difference(outer, extended inner). FacePlane snapshots match faces across re-tessellations; unknown planes are graceful no-ops (re-eval robustness).
+- Dead ends (documented in-code): opening via boolean-union prisms lost chunks to coplanar faces three different ways (outer-footprint walls, inner-footprint walls, hairline caps); the constructive vertex-push replaced all of it with zero extra booleans.
+- forge-model: Feature::Shell (consumes target, DimField::ShellThickness), evaluation, labels. App: apply_shell palette action (picked faces → plane snapshots), inspector thickness slider + binding field, palette entry.
+- E2E: closed + open-top shell with exact volumes (open-top keeps the rim ring: −footprint·t), undo restore, empty-scene guard.
+- Verification: fmt clean; clippy -D warnings clean (native all-targets + wasm32); 18 suites green; 64 app tests; disk pressure managed (incremental compilation off, debug artifacts pruned).
+- CI for the K-03 push be005e6: checked in flight before this commit.
+
+Stage Summary:
+- F-05 closed: hollow with wall thickness + open faces, parametric, undoable, E2E-guarded.
+- The plane-offset inner solid is also the foundation for K-06-adjacent offsetting and future thin-wall extrude modes (F-07).
+- Part-modeling gaps remaining from the original wave: F-07 thin-wall/rib, S-06 offset entities, S-07 trim/extend. Next up per priority: A-01 multi-body, then the browser E2E specs for the CAM/chamfer/shell flows.

@@ -125,7 +125,15 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `(S)` small ≤ 1 day �
       Volume-exact tests incl. counterbore/countersink/drill point and
       multi-placement; hole consumes its target; inspector hole wizard;
       palette command.*
-- [ ] **F-05 Shell / hollow** `(L)` `P2` — needs face-level selection (see
+- [x] **F-05 Shell / hollow** `(M→done)` `P2` — mesh plane-offset approach:
+      uniform-thickness inner offset (per-vertex least-squares
+      intersection of adjacent face planes moved inward by t — a box
+      corner moves exactly t·(1,1,1), unlike naive normal offsets),
+      openings by pushing the inner open-face vertices through the
+      outer surface (wall-continuation semantics, no coplanar unions),
+      Difference for the cavity. FacePlane snapshots survive
+      re-tessellation. Exact-volume tests (closed 1000−6³, open-top with
+      rim ring), E2E incl. undo. *Original text: needs face-level selection (see
       W-04) or a B-Rep kernel; documented in `forge-geometry/src/detail.rs`.
 - [x] **F-06 Draft / taper on extrude** `(M)` `P2`
       Extrude with per-side slope (loft trick: section pair, one offset-

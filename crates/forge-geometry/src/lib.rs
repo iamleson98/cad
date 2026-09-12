@@ -30,6 +30,7 @@ pub mod detail;
 pub mod error;
 pub mod mesh;
 pub mod primitives;
+pub mod shell;
 pub mod sweep;
 pub mod triangulate;
 
@@ -37,6 +38,7 @@ pub use boolean::{boolean, CsgOp};
 pub use bvh::{Bvh, RayHit};
 pub use error::GeometryError;
 pub use mesh::{TriMesh, WELD_EPS};
+pub use shell::FacePlane;
 pub use sweep::{
     extrude, loft, revolve, sweep_along_path, ExtrudeDirection, ExtrudeParams, Profile2D,
     RevolveParams,

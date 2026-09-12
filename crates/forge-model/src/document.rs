@@ -90,6 +90,8 @@ pub enum DimField {
     ChamferDistance,
     /// `FilletParams::radius`.
     FilletRadius,
+    /// `ShellParams::thickness`.
+    ShellThickness,
 }
 
 impl std::fmt::Display for DimField {
@@ -104,6 +106,7 @@ impl std::fmt::Display for DimField {
             DimField::PrimitiveDimA => "dimension A",
             DimField::ChamferDistance => "chamfer distance",
             DimField::FilletRadius => "fillet radius",
+            DimField::ShellThickness => "shell thickness",
         })
     }
 }

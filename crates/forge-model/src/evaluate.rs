@@ -563,6 +563,17 @@ impl Evaluator {
                 forge_geometry::detail::chamfer_edges(target_mesh, &p.edges, distance)?
             }
 
+            Feature::Shell(p) => {
+                let thickness = dim(DimField::ShellThickness, p.thickness);
+                let target_mesh = self.cached_body(p.target).ok_or_else(|| {
+                    crate::ModelError::MissingEntity(format!(
+                        "shell target {} has no body",
+                        p.target
+                    ))
+                })?;
+                forge_geometry::shell::shell(target_mesh, thickness, &p.open)?
+            }
+
             Feature::Fillet(p) => {
                 let radius = dim(DimField::FilletRadius, p.radius);
                 if p.edges.is_empty() {
@@ -647,9 +658,10 @@ fn consumed_targets(feature: &Feature) -> Vec<FeatureId> {
             .into_iter()
             .collect(),
         // K-03: chamfer/fillet replace the target body with the detailed
-        // one (move semantics).
+        // one (move semantics). F-05 shell likewise.
         Feature::Chamfer(p) => vec![p.target],
         Feature::Fillet(p) => vec![p.target],
+        Feature::Shell(p) => vec![p.target],
         // W-01: a transform *moves* its source (the source body is
         // replaced by the transformed one).
         Feature::TransformBody { source, .. } => vec![*source],

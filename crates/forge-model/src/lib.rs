@@ -30,7 +30,8 @@ pub use evaluate::{hole_placements, EvalBody, Evaluation, Evaluator};
 pub use feature::{
     BooleanFeature, ChamferParams, CircularPatternParams, DatumParams, ExtrudeOp, ExtrudeParams,
     Feature, FilletParams, HoleKind, HoleParams, ImportedMeshParams, LinearPatternParams,
-    LoftParams, MirrorParams, PrimitiveKind, PrimitiveParams, RevolveParams, SweepParams,
+    LoftParams, MirrorParams, PrimitiveKind, PrimitiveParams, RevolveParams, ShellParams,
+    SweepParams,
 };
 pub use migrate::migrate_document;
 pub use selection::{Selection, SelectionItem};
