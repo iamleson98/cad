@@ -122,3 +122,24 @@ Stage Summary:
 - F-05 closed: hollow with wall thickness + open faces, parametric, undoable, E2E-guarded.
 - The plane-offset inner solid is also the foundation for K-06-adjacent offsetting and future thin-wall extrude modes (F-07).
 - Part-modeling gaps remaining from the original wave: F-07 thin-wall/rib, S-06 offset entities, S-07 trim/extend. Next up per priority: A-01 multi-body, then the browser E2E specs for the CAM/chamfer/shell flows.
+
+---
+Task ID: 7 (session close-out)
+Agent: main (Super Z)
+Task: Self-reflection on the session's work (user-mandated per batch).
+
+Reflection — what went well:
+- The "beat Inventor CAD/CAM" framing reshaped the roadmap around a differentiator (integrated, CI-scriptable CAM) instead of chasing B-Rep parity — the mesh kernel became an asset (heightfield CAM is exact over concatenated bodies).
+- The CAM loop closed end-to-end in one session: kernel → strategies → visible toolpaths → gouge-verified simulation → G-code file, each layer independently tested (37 crate tests) and E2E-guarded (8 native tests).
+- K-03 + F-05 landed the two most-expected part-modeling details with exact-volume tests; both re-used one proven pattern (build a cutter/offset solid, let the boolean kernel guarantee watertightness).
+
+Reflection — what went poorly and the lessons:
+- Debug-by-hand arithmetic burned significant time on the fillet arc (three sign errors) — the debug-print loop was the only reliable method; lesson: instrument early, hand-trace never.
+- The same coplanar-boolean failure mode bit four different ways (chamfer unions, fillet unions, shell prisms ×3); the systematic answer is the PEN-overshoot pattern + constructive geometry (vertex push) instead of union-of-coplanar-solids. This is now documented in-code in three places.
+- Test expectations written from mental models were wrong twice (concave fillet area, open-shell rim); geometry tests should derive expectations from first-principles formulas, not intuition.
+- Sandbox resets and disk exhaustion cost ~30 min each; mitigations in place (credential restore script pattern, CARGO_INCREMENTAL=0, aggressive target pruning).
+- atan2(y, x) argument order and nalgebra's Deref-to-coordinates (`*vec` gives XYZ, not Vector) — two Rust-specific traps now encountered and documented.
+
+Numbers: 5 feature pushes (CAM C-01..C-06, sim C-05, K-03, F-05, docs), 313 workspace tests / 18 suites (was 250 at session start... net +63), 4× CI all-green (6/6 jobs), 0 regressions in the 43 pre-existing E2E flows.
+
+Next (priority order): A-01 multi-body (assembly + CAM foundation) → browser e2e specs for CAM/chamfer/shell flows → S-06 offset + S-07 trim/extend → F-07 thin-wall.
